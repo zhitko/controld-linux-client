@@ -38,11 +38,21 @@ SettingsWindow::SettingsWindow(ProfileController& controller, QWidget* parent)
     connect(editButton, &QPushButton::clicked, this, &SettingsWindow::editProfile);
     connect(removeButton, &QPushButton::clicked, this, &SettingsWindow::removeProfile);
 
+    auto* useButton = new QPushButton(QStringLiteral("Use this profile"), this);
+    auto* disableButton = new QPushButton(QStringLiteral("Disable (restore default DNS)"), this);
+    connect(useButton, &QPushButton::clicked, this, &SettingsWindow::activateSelected);
+    connect(disableButton, &QPushButton::clicked, this, &SettingsWindow::disableDns);
+
     auto* buttons = new QHBoxLayout;
     buttons->addWidget(addButton);
     buttons->addWidget(editButton);
     buttons->addWidget(removeButton);
     buttons->addStretch(1);
+
+    auto* activation = new QHBoxLayout;
+    activation->addWidget(useButton);
+    activation->addWidget(disableButton);
+    activation->addStretch(1);
 
     m_chrome = new QCheckBox(
         QStringLiteral("Pin Chrome and Chromium Secure DNS to the active profile"), this);
@@ -105,6 +115,7 @@ SettingsWindow::SettingsWindow(ProfileController& controller, QWidget* parent)
     layout->addWidget(m_status);
     layout->addWidget(m_profiles, 1);
     layout->addLayout(buttons);
+    layout->addLayout(activation);
     layout->addWidget(m_chrome);
     layout->addWidget(chromeNote);
     layout->addWidget(m_helperNote);
@@ -117,7 +128,6 @@ SettingsWindow::SettingsWindow(ProfileController& controller, QWidget* parent)
     connect(&m_controller, &ProfileController::statusChanged, this, &SettingsWindow::refreshStatus);
     connect(&m_controller, &ProfileController::profilesChanged, this,
             &SettingsWindow::reloadProfiles);
-    reloadProfiles();
     refreshStatus();
     refreshHelperSection();
 }
@@ -150,8 +160,11 @@ void SettingsWindow::reloadProfiles() {
     const QString selected = selectedProfileId();
     m_profiles->clear();
     for (const Profile& profile : m_controller.store().profiles()) {
-        auto* item = new QListWidgetItem(
-            QStringLiteral("%1 (%2)").arg(profile.name, profile.resolverId), m_profiles);
+        QString label = QStringLiteral("%1 (%2)").arg(profile.name, profile.resolverId);
+        if (profile.id == m_controller.store().activeProfileId()) {
+            label += QStringLiteral(" — active");
+        }
+        auto* item = new QListWidgetItem(label, m_profiles);
         item->setData(Qt::UserRole, profile.id);
         if (profile.id == selected) {
             m_profiles->setCurrentItem(item);
@@ -162,6 +175,7 @@ void SettingsWindow::reloadProfiles() {
 void SettingsWindow::refreshStatus() {
     m_status->setText(m_controller.statusLine() + QStringLiteral("\n") +
                       m_controller.statusDetail());
+    reloadProfiles();
 }
 
 void SettingsWindow::addProfile() {
@@ -215,6 +229,20 @@ void SettingsWindow::removeProfile() {
         return;
     }
     showResult(m_controller.removeProfile(id));
+}
+
+void SettingsWindow::activateSelected() {
+    const QString id = selectedProfileId();
+    if (id.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Profile"),
+                                 QStringLiteral("Select a profile first."));
+        return;
+    }
+    showResult(m_controller.activateProfile(id));
+}
+
+void SettingsWindow::disableDns() {
+    showResult(m_controller.disable());
 }
 
 QString SettingsWindow::selectedProfileId() const {

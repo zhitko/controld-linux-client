@@ -13,7 +13,23 @@
 #include <QStandardPaths>
 #include <QSystemTrayIcon>
 
+#include <cstdio>
+#include <cstring>
+
+#ifndef CONTROLD_VERSION
+#error CONTROLD_VERSION must be the CMake project version
+#endif
+
 namespace {
+
+bool versionRequested(int argc, char* argv[]) {
+    for (int index = 1; index < argc; ++index) {
+        if (std::strcmp(argv[index], "--version") == 0) {
+            return true;
+        }
+    }
+    return false;
+}
 
 QString settingsFilePath() {
     const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
@@ -33,9 +49,15 @@ QString lockFilePath() {
 } // namespace
 
 int main(int argc, char* argv[]) {
+    if (versionRequested(argc, argv)) {
+        std::fputs("controld-tray " CONTROLD_VERSION "\n", stdout);
+        return 0;
+    }
+
     QApplication application(argc, argv);
     QApplication::setOrganizationName(QStringLiteral("vzhitko"));
     QApplication::setApplicationName(QStringLiteral("controld-tray"));
+    QApplication::setApplicationVersion(QStringLiteral(CONTROLD_VERSION));
     QApplication::setApplicationDisplayName(QStringLiteral("ControlD Tray"));
     QApplication::setDesktopFileName(QStringLiteral("controld-tray"));
     QApplication::setQuitOnLastWindowClosed(false);
@@ -72,7 +94,8 @@ int main(int argc, char* argv[]) {
         settings.show();
         QMessageBox::information(
             &settings, QStringLiteral("ControlD Tray"),
-            QStringLiteral("No system tray is available. Use this window to manage profiles."));
+            QStringLiteral("No system tray is available. Use this window to choose a profile or "
+                           "restore default DNS."));
     }
 
     return QApplication::exec();

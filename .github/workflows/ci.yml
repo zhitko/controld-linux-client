@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -28,6 +28,7 @@ jobs:
             clang-format \
             clang-tidy \
             dpkg-dev \
+            file \
             python3
 
       - name: Check formatting
@@ -54,10 +55,43 @@ jobs:
       - name: Package
         run: cpack -G DEB --config build/CPackConfig.cmake
 
+      - name: Check Debian dependencies
+        run: |
+          deb=$(echo build/controld-tray_*_ubuntu24.04_amd64.deb)
+          test "$(dpkg-deb -f "$deb" Version)" = "1.0.0"
+          test "$(dpkg-deb -f "$deb" Package)" = "controld-tray"
+          depends=$(dpkg-deb -f "$deb" Depends)
+          printf '%s\n' "$depends"
+          printf '%s\n' "$depends" | grep -q 'libqt6core6t64'
+          printf '%s\n' "$depends" | grep -q 'libqt6gui6t64'
+          printf '%s\n' "$depends" | grep -q 'libqt6dbus6t64'
+          if printf '%s\n' "$depends" | grep -E 'libqt6(core|gui|dbus|widgets|network)6( |,|\()'; then
+            echo "Depends names a Qt library without Ubuntu 24.04's t64 suffix" >&2
+            exit 1
+          fi
+          if printf '%s\n' "$depends" | grep -E '>= 6\.(8|9|10)'; then
+            echo "Depends requires a Qt newer than Ubuntu 24.04" >&2
+            exit 1
+          fi
+
+      - name: Install the package in a clean Ubuntu 24.04 container
+        run: |
+          deb=$(echo build/controld-tray_*_ubuntu24.04_amd64.deb)
+          docker run --rm -v "$PWD/$deb:/tmp/controld-tray.deb:ro" ubuntu:24.04 \
+            bash -eux -c '
+              export DEBIAN_FRONTEND=noninteractive
+              if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+                sed -i "s/Components: main$/Components: main universe/" /etc/apt/sources.list.d/ubuntu.sources
+              fi
+              apt-get update
+              apt-get install -y --no-install-recommends /tmp/controld-tray.deb
+              test "$(controld-tray --version)" = "controld-tray 1.0.0"
+            '
+
       - uses: actions/upload-artifact@v4
         with:
-          name: controld-tray-deb
-          path: build/controld-tray_*_amd64.deb
+          name: controld-tray-ubuntu24.04-deb
+          path: build/controld-tray_*_ubuntu24.04_amd64.deb
           if-no-files-found: error
 
   appimage:

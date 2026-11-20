@@ -6,10 +6,10 @@ The app runs as your user. Changing a link's DNS asks systemd-resolved over D-Bu
 
 ## What it does
 
-- Tray menu of saved profiles (display name + Control D resolver ID). The selected profile is checked.
+- Tray menu of saved profiles (display name + Control D resolver ID). The selected profile is checked. Left click and right click both open that menu. A click does not open Settings by itself; Settings is an item in the menu.
 - **Disable (restore default DNS)** calls resolved's `RevertLink` on links this app has configured.
 - **Flush DNS cache** calls resolved's `FlushCaches`, then looks up Control D's verification name again when a profile is selected.
-- **Settings** adds, edits, and removes profiles. Profiles are stored with `QSettings`.
+- **Settings** adds, edits, and removes profiles, and can activate the selected profile or restore default DNS. That keeps the app usable when a tray host cannot show a menu. Profiles are stored with `QSettings`.
 - **Restart Chrome** asks confirmed browser processes to quit. Chrome's hostname cache cannot be cleared from outside the process.
 - **Quit** leaves the current DNS settings in place.
 - The tray icon and tooltip follow the last real result: active (the verification lookup matched), failed (a D-Bus call or the lookup failed), or off. A failed switch is not shown as active.
@@ -18,11 +18,13 @@ Resolver IDs are 1–64 ASCII letters or digits. Free-resolver hostnames and cli
 
 ## Install
 
-Build a package (see below) and install it:
+The Debian package is built on Ubuntu 24.04 against that release's Qt 6.4.2. Library dependencies are generated with `dpkg-shlibdeps`, so the package asks for noble's `libqt6*t64` names at the versions those libraries actually provide.
 
 ```bash
-sudo apt install ./controld-tray_*_amd64.deb
+sudo apt install ./controld-tray_*_ubuntu24.04_amd64.deb
 ```
+
+`controld-tray --version` prints `controld-tray 1.0.0`, the same version as the package. Ubuntu 22.04's distro Qt is 6.2, which is older than this program, so use the AppImage there.
 
 The package installs:
 
@@ -68,7 +70,7 @@ ctest --test-dir build --output-on-failure
 cpack -G DEB --config build/CPackConfig.cmake
 ```
 
-The build uses `-Wall -Wextra -Wpedantic -Werror`. Tests do not need a desktop session. CI on GitHub Actions runs the same build, tests, `clang-format`, `clang-tidy`, and the Debian package on the current Ubuntu runner, and builds the AppImage in an Ubuntu 20.04 container.
+The build uses `-Wall -Wextra -Wpedantic -Werror`. Tests do not need a desktop session. CI builds, tests, and packages the `.deb` on an Ubuntu 24.04 runner using only the distro Qt, then installs that package in a clean Ubuntu 24.04 container and runs `controld-tray --version`. The AppImage is built in an Ubuntu 20.04 container for older glibc.
 
 ## How it works
 
