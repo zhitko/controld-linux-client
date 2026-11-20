@@ -48,6 +48,7 @@ class ProfileController : public QObject {
     OperationResult applyDesired(bool announce);
     OperationResult applyDesiredNow(bool announce);
     OperationResult disableNow(bool announce);
+    QString restoreLinkDns(int ifindex, bool* restored);
     OperationResult finish(bool ok, RuntimeStatus status, const QString& detail, bool announce,
                            bool mentionChromeCache, bool policyChanged);
     QString activeInterfaceLabel() const;

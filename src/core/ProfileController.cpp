@@ -401,12 +401,22 @@ OperationResult ProfileController::applyDesiredNow(bool announce) {
             continue;
         }
         const CallResult reverted = m_resolved.revertLink(old);
-        if (reverted.ok || reverted.errorName == noSuchLinkErrorName()) {
+        if (reverted.errorName == noSuchLinkErrorName()) {
             continue;
         }
-        remaining.append(old);
-        warnings.append(
-            QStringLiteral("Could not revert interface %1: %2").arg(old).arg(reverted.summary()));
+        if (!reverted.ok) {
+            remaining.append(old);
+            warnings.append(QStringLiteral("Could not revert interface %1: %2")
+                                .arg(old)
+                                .arg(reverted.summary()));
+            continue;
+        }
+        bool restored = false;
+        const QString restoreError = restoreLinkDns(old, &restored);
+        if (!restoreError.isEmpty()) {
+            remaining.append(old);
+            warnings.append(restoreError);
+        }
     }
     if (!m_store.setAppliedIfindexes(remaining, &persistenceError)) {
         return persistenceFailure(persistenceError, announce);
@@ -471,6 +481,10 @@ OperationResult ProfileController::disableNow(bool announce) {
                       false, false);
     }
 
+    QStringList problems;
+    QList<int> stillDirty;
+    QStringList restoredLabels;
+    bool missingServers = false;
     for (const int ifindex : dirty) {
         const CallResult reverted = m_resolved.revertLink(ifindex);
         if (!reverted.ok && reverted.errorName != noSuchLinkErrorName()) {
@@ -480,14 +494,30 @@ OperationResult ProfileController::disableNow(bool announce) {
                               .arg(reverted.summary()),
                           announce, false, false);
         }
+        if (!reverted.ok) {
+            continue;
+        }
+        bool restored = false;
+        const QString restoreError = restoreLinkDns(ifindex, &restored);
+        if (!restoreError.isEmpty()) {
+            problems.append(restoreError);
+            stillDirty.append(ifindex);
+            continue;
+        }
+        if (restored) {
+            restoredLabels.append(m_links.ifindex() == ifindex && !m_links.interfaceName().isEmpty()
+                                      ? m_links.interfaceName()
+                                      : QString::number(ifindex));
+        } else {
+            missingServers = true;
+        }
     }
 
     const bool revertedSomething = !dirty.isEmpty();
-    if (!m_store.setAppliedIfindexes({}, &error)) {
+    if (!m_store.setAppliedIfindexes(stillDirty, &error)) {
         return persistenceFailure(error, announce);
     }
 
-    QStringList problems;
     const CallResult flushed = m_resolved.flushCaches();
     if (!flushed.ok) {
         problems.append(QStringLiteral("Could not flush the DNS cache: %1").arg(flushed.summary()));
@@ -513,11 +543,15 @@ OperationResult ProfileController::disableNow(bool announce) {
 
     QStringList sentences;
     sentences.append(QStringLiteral("ControlD is off."));
-    if (revertedSomething) {
+    if (!restoredLabels.isEmpty()) {
+        sentences.append(QStringLiteral("NetworkManager's DNS servers were written back on %1.")
+                             .arg(restoredLabels.join(QStringLiteral(", "))));
+    }
+    if (revertedSomething && missingServers) {
         sentences.append(
             QStringLiteral("Per-link DNS settings made by this app were reverted. NetworkManager "
-                           "may not restore its own "
-                           "DNS servers until the connection is reapplied or reconnected."));
+                           "has no DNS servers to write back for a link, so that link stays "
+                           "without a resolver until its connection is activated again."));
     }
     if (policyChanged) {
         sentences.append(QStringLiteral("The managed Chrome Secure DNS policy was removed."));
@@ -545,6 +579,50 @@ OperationResult ProfileController::finish(bool ok, RuntimeStatus status, const Q
         result.notification += chromeCacheHint(policyChanged);
     }
     return result;
+}
+
+QString ProfileController::restoreLinkDns(int ifindex, bool* restored) {
+    if (restored != nullptr) {
+        *restored = false;
+    }
+    const LinkDnsConfiguration config = m_links.linkDns(ifindex);
+    if (!config.error.isEmpty()) {
+        return config.error;
+    }
+    if (config.servers.isEmpty()) {
+        return {};
+    }
+
+    const CallResult dns = m_resolved.setLinkDnsEx(ifindex, config.servers);
+    if (!dns.ok) {
+        return QStringLiteral("Could not write NetworkManager DNS on interface %1: %2")
+            .arg(ifindex)
+            .arg(dns.summary());
+    }
+    if (!config.searchDomains.isEmpty()) {
+        QList<SearchDomain> domains;
+        for (const QString& name : config.searchDomains) {
+            domains.append(SearchDomain(name, false));
+        }
+        const CallResult written = m_resolved.setLinkDomains(ifindex, domains);
+        if (!written.ok) {
+            return QStringLiteral("Could not write search domains on interface %1: %2")
+                .arg(ifindex)
+                .arg(written.summary());
+        }
+    }
+    if (config.defaultRoute) {
+        const CallResult route = m_resolved.setLinkDefaultRoute(ifindex, true);
+        if (!route.ok) {
+            return QStringLiteral("Could not restore the DNS default route on interface %1: %2")
+                .arg(ifindex)
+                .arg(route.summary());
+        }
+    }
+    if (restored != nullptr) {
+        *restored = true;
+    }
+    return {};
 }
 
 QString ProfileController::activeInterfaceLabel() const {

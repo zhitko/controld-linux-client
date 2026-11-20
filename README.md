@@ -7,7 +7,7 @@ The app runs as your user. Changing a link's DNS asks systemd-resolved over D-Bu
 ## What it does
 
 - Tray menu of saved profiles (display name + Control D resolver ID). The selected profile is checked. Left click and right click both open that menu. A click does not open Settings by itself; Settings is an item in the menu.
-- **Disable (restore default DNS)** calls resolved's `RevertLink` on links this app has configured.
+- **Disable (restore default DNS)** calls resolved's `RevertLink` on links this app has configured, then writes back the DNS servers, search domains, and default DNS route that NetworkManager still has for those devices.
 - **Flush DNS cache** calls resolved's `FlushCaches`, then looks up Control D's verification name again when a profile is selected.
 - **Settings** adds, edits, and removes profiles, and can activate the selected profile or restore default DNS. That keeps the app usable when a tray host cannot show a menu. Profiles are stored with `QSettings`.
 - **Restart Chrome** asks confirmed browser processes to quit. Chrome's hostname cache cannot be cleared from outside the process.
@@ -134,7 +134,7 @@ Those are the [Chrome DnsOverHttpsMode](https://chromeenterprise.google/policies
 
 - **Chrome's hostname cache** cannot be flushed externally. Restart Chrome. A managed policy is also only guaranteed to be picked up at browser start.
 - **NetworkManager can overwrite per-link DNS.** It calls the same resolved APIs when a connection is activated or reapplied. This app reapplies on primary-connection changes and on activation, but a later DNS push that does not emit those signals will stick until the next one. NetworkManager's `systemd-resolved` DNS plugin is the usual source of that push.
-- **`RevertLink` clears per-link runtime DNS**, including servers NetworkManager had pushed. NetworkManager does not always put the DHCP resolvers back until the connection is reapplied or reconnected (`nmcli device reapply <iface>` or a reconnect). Disable says so when it succeeds.
+- **`RevertLink` clears per-link runtime DNS**, including servers NetworkManager had pushed. NetworkManager keeps those servers in the device IP configuration and does not send them again on `nmcli device reapply`, because that list did not change. Disable reads `NameserverData` (and the older `Nameservers` list for IPv4) and writes those servers back to systemd-resolved, including a default DNS route when the DNS priority is non-negative. A link NetworkManager no longer knows about stays without per-link DNS until that connection is activated again.
 - **`~.` is not an exclusive claim** if another link is also a default DNS route. systemd routes a query to every link whose routing domain matches ([resolved discussion](https://github.com/systemd/systemd/issues/9472)). This app sets the primary link only.
 - **`ctrld` is not used.** Control D's command-line daemon is the vendor's supported Linux client. This program talks to systemd-resolved directly so profiles can change without that daemon.
 - A link owned by systemd-networkd can return `org.freedesktop.resolve1.LinkBusy`. The error is shown; DNS is left unchanged.

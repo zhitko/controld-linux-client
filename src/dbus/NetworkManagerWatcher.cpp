@@ -7,6 +7,7 @@
 #include <QDBusObjectPath>
 #include <QDBusReply>
 #include <QDBusVariant>
+#include <QtEndian>
 
 #include <net/if.h>
 
@@ -76,6 +77,95 @@ QStringList objectPaths(const QVariant& value) {
     return paths;
 }
 
+QVariant dbusField(const QVariant& stored) {
+    if (stored.userType() == qMetaTypeId<QDBusVariant>()) {
+        return stored.value<QDBusVariant>().variant();
+    }
+    return stored;
+}
+
+DnsServerEndpoint endpointFromMap(const QVariantMap& entry) {
+    DnsServerEndpoint endpoint;
+    endpoint.address = QHostAddress(dbusField(entry.value(QStringLiteral("address"))).toString());
+    endpoint.port = static_cast<quint16>(dbusField(entry.value(QStringLiteral("port"))).toUInt());
+    return endpoint;
+}
+
+QList<DnsServerEndpoint> serversFromNameserverData(const QVariant& value) {
+    QList<DnsServerEndpoint> servers;
+    if (value.canConvert<QDBusArgument>()) {
+        const QDBusArgument argument = value.value<QDBusArgument>();
+        if (argument.currentType() != QDBusArgument::ArrayType) {
+            return {};
+        }
+        argument.beginArray();
+        while (!argument.atEnd()) {
+            QVariantMap entry;
+            argument >> entry;
+            const DnsServerEndpoint endpoint = endpointFromMap(entry);
+            if (!endpoint.address.isNull()) {
+                servers.append(endpoint);
+            }
+        }
+        argument.endArray();
+        return servers;
+    }
+    for (const QVariant& item : value.toList()) {
+        const DnsServerEndpoint endpoint = endpointFromMap(item.toMap());
+        if (!endpoint.address.isNull()) {
+            servers.append(endpoint);
+        }
+    }
+    return servers;
+}
+
+QList<DnsServerEndpoint> serversFromIpv4Nameservers(const QVariant& value) {
+    if (!value.canConvert<QDBusArgument>()) {
+        return {};
+    }
+    const QDBusArgument argument = value.value<QDBusArgument>();
+    if (argument.currentType() != QDBusArgument::ArrayType) {
+        return {};
+    }
+    QList<DnsServerEndpoint> servers;
+    argument.beginArray();
+    while (!argument.atEnd()) {
+        quint32 raw = 0;
+        argument >> raw;
+        DnsServerEndpoint endpoint;
+        endpoint.address = QHostAddress(qFromBigEndian(raw));
+        if (!endpoint.address.isNull()) {
+            servers.append(endpoint);
+        }
+    }
+    argument.endArray();
+    return servers;
+}
+
+QStringList stringListFromValue(const QVariant& value) {
+    if (value.canConvert<QStringList>()) {
+        return value.toStringList();
+    }
+    if (!value.canConvert<QDBusArgument>()) {
+        return {};
+    }
+    const QDBusArgument argument = value.value<QDBusArgument>();
+    if (argument.currentType() != QDBusArgument::ArrayType) {
+        return {};
+    }
+    QStringList values;
+    argument.beginArray();
+    while (!argument.atEnd()) {
+        QString text;
+        argument >> text;
+        if (!text.isEmpty()) {
+            values.append(text);
+        }
+    }
+    argument.endArray();
+    return values;
+}
+
 bool relevantProperty(const QVariantMap& changed, const QStringList& invalidated) {
     const QStringList keys = {
         QStringLiteral("PrimaryConnection"),
@@ -108,6 +198,82 @@ QString NetworkManagerWatcher::interfaceName() const {
 
 QString NetworkManagerWatcher::lastError() const {
     return m_error;
+}
+
+LinkDnsConfiguration NetworkManagerWatcher::linkDns(int ifindex) const {
+    LinkDnsConfiguration config;
+    if (ifindex <= 0) {
+        return config;
+    }
+
+    QString propertyError;
+    const QStringList devices =
+        objectPaths(readProperty(QStringLiteral("/org/freedesktop/NetworkManager"),
+                                 QStringLiteral("org.freedesktop.NetworkManager"),
+                                 QStringLiteral("Devices"), &propertyError));
+    if (devices.isEmpty()) {
+        config.error = propertyError.isEmpty() ? QStringLiteral("NetworkManager has no devices.")
+                                               : propertyError;
+        return config;
+    }
+
+    QString devicePath;
+    const QString deviceInterface = QStringLiteral("org.freedesktop.NetworkManager.Device");
+    for (const QString& path : devices) {
+        QString deviceError;
+        QString interfaceName =
+            readProperty(path, deviceInterface, QStringLiteral("IpInterface"), &deviceError)
+                .toString();
+        if (interfaceName.isEmpty()) {
+            interfaceName =
+                readProperty(path, deviceInterface, QStringLiteral("Interface"), &deviceError)
+                    .toString();
+        }
+        if (interfaceName.isEmpty()) {
+            continue;
+        }
+        if (static_cast<int>(if_nametoindex(interfaceName.toUtf8().constData())) == ifindex) {
+            devicePath = path;
+            break;
+        }
+    }
+    if (devicePath.isEmpty()) {
+        return config;
+    }
+
+    const auto appendConfig = [&](const QString& path, const QString& interface, bool ipv4) {
+        if (path.isEmpty() || path == QLatin1String("/")) {
+            return;
+        }
+        QString ignored;
+        QList<DnsServerEndpoint> servers = serversFromNameserverData(
+            readProperty(path, interface, QStringLiteral("NameserverData"), &ignored));
+        if (servers.isEmpty() && ipv4) {
+            servers = serversFromIpv4Nameservers(
+                readProperty(path, interface, QStringLiteral("Nameservers"), &ignored));
+        }
+        const int priority =
+            readProperty(path, interface, QStringLiteral("DnsPriority"), &ignored).toInt();
+        if (!servers.isEmpty() && priority >= 0) {
+            config.defaultRoute = true;
+        }
+        config.servers.append(servers);
+        for (const QString& search : stringListFromValue(
+                 readProperty(path, interface, QStringLiteral("Searches"), &ignored))) {
+            if (!config.searchDomains.contains(search)) {
+                config.searchDomains.append(search);
+            }
+        }
+    };
+
+    QString configError;
+    const QString ip4 = objectPath(
+        readProperty(devicePath, deviceInterface, QStringLiteral("Ip4Config"), &configError));
+    const QString ip6 = objectPath(
+        readProperty(devicePath, deviceInterface, QStringLiteral("Ip6Config"), &configError));
+    appendConfig(ip4, QStringLiteral("org.freedesktop.NetworkManager.IP4Config"), true);
+    appendConfig(ip6, QStringLiteral("org.freedesktop.NetworkManager.IP6Config"), false);
+    return config;
 }
 
 void NetworkManagerWatcher::start() {

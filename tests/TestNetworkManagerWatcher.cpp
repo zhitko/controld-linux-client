@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QDBusConnection>
 #include <QDBusMessage>
+#include <QDBusMetaType>
 #include <QDBusObjectPath>
 #include <QDBusVariant>
 #include <QDBusVirtualObject>
@@ -41,6 +42,18 @@ class FakeNetworkManager final : public QDBusVirtualObject {
             } else if (property == QLatin1String("IpInterface") ||
                        property == QLatin1String("Interface")) {
                 value = QStringLiteral("lo");
+            } else if (property == QLatin1String("Ip4Config")) {
+                value = QVariant::fromValue(QDBusObjectPath(root + QStringLiteral("/IP4Config/1")));
+            } else if (property == QLatin1String("Ip6Config")) {
+                value = QVariant::fromValue(QDBusObjectPath(QStringLiteral("/")));
+            } else if (property == QLatin1String("NameserverData")) {
+                QVariantMap server;
+                server.insert(QStringLiteral("address"), QStringLiteral("192.168.1.1"));
+                value = QVariant::fromValue(QList<QVariantMap> {server});
+            } else if (property == QLatin1String("DnsPriority")) {
+                value = 100;
+            } else if (property == QLatin1String("Searches")) {
+                value = QStringList {QStringLiteral("lan")};
             } else {
                 return false;
             }
@@ -93,6 +106,12 @@ class TestNetworkManagerWatcher : public QObject {
         QTRY_COMPARE(activated.size(), 1);
         QCOMPARE(watcher.ifindex(), originalIndex);
         QCOMPARE(changed.size(), 0);
+        const controld::LinkDnsConfiguration dns = watcher.linkDns(originalIndex);
+        QVERIFY(dns.error.isEmpty());
+        QCOMPARE(dns.servers.size(), 1);
+        QCOMPARE(dns.servers.at(0).address, QHostAddress(QStringLiteral("192.168.1.1")));
+        QCOMPARE(dns.searchDomains, QStringList({QStringLiteral("lan")}));
+        QVERIFY(dns.defaultRoute);
         server.terminate();
         QVERIFY(server.waitForFinished());
     }
@@ -105,6 +124,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     qputenv("DBUS_SYSTEM_BUS_ADDRESS", qgetenv("DBUS_SESSION_BUS_ADDRESS"));
+    qDBusRegisterMetaType<QList<QVariantMap>>();
     QCoreApplication app(argc, argv);
     if (app.arguments().contains(QStringLiteral("--service"))) {
         FakeNetworkManager manager;

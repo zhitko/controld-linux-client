@@ -18,6 +18,7 @@ class NetworkManagerWatcher : public QObject, public ILinkInfo {
 
     int ifindex() const override;
     QString interfaceName() const override;
+    LinkDnsConfiguration linkDns(int ifindex) const override;
     QString lastError() const;
     void start();
 
