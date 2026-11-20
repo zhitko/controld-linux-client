@@ -12,6 +12,8 @@ class TestProfileStore : public QObject {
   private slots:
     void roundTripAndRejectsInvalidIds();
     void fileIsOwnerReadWriteOnly();
+    void failedWritesDoNotChangeMemoryOrReportSuccess();
+    void readsExistingSerializedSettings();
 };
 
 void TestProfileStore::roundTripAndRejectsInvalidIds() {
@@ -71,6 +73,60 @@ void TestProfileStore::fileIsOwnerReadWriteOnly() {
     QVERIFY((permissions & QFileDevice::WriteGroup) == 0);
     QVERIFY((permissions & QFileDevice::ReadOther) == 0);
     QVERIFY((permissions & QFileDevice::WriteOther) == 0);
+}
+
+void TestProfileStore::failedWritesDoNotChangeMemoryOrReportSuccess() {
+    QTemporaryDir dir;
+    const QString parent = dir.filePath(QStringLiteral("config"));
+    const QString path = parent + QStringLiteral("/settings.ini");
+    controld::ProfileStore store(path);
+    QString error;
+    const QString id = store.addProfile(QStringLiteral("Home"), QStringLiteral("abcd"), &error);
+    QVERIFY(!id.isEmpty());
+    QVERIFY(store.setActiveProfileId(id, &error));
+    QVERIFY(store.setChromePolicyDirty(true, &error));
+    controld::ProfileStore reloaded(path);
+    QVERIFY(reloaded.chromePolicyDirty());
+    const auto profiles = store.profiles();
+    QVERIFY(QDir().rename(parent, parent + QStringLiteral(".saved")));
+    QFile blocker(parent);
+    QVERIFY(blocker.open(QIODevice::WriteOnly));
+    blocker.close();
+
+    QVERIFY(store.addProfile(QStringLiteral("Work"), QStringLiteral("efgh"), &error).isEmpty());
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!store.updateProfile(id, QStringLiteral("Changed"), QStringLiteral("efgh"), &error));
+    QVERIFY(!store.removeProfile(id, &error));
+    QCOMPARE(store.profiles(), profiles);
+    QCOMPARE(store.activeProfileId(), id);
+    QVERIFY(!store.setActiveProfileId({}, &error));
+    QVERIFY(!store.setAppliedIfindexes({3}, &error));
+    QVERIFY(!store.setChromePolicyEnabled(true, &error));
+    QVERIFY(!store.setChromePinnedResolverId(QStringLiteral("abcd"), &error));
+    QVERIFY(!store.setChromePolicyDirty(false, &error));
+    QCOMPARE(store.activeProfileId(), id);
+    QVERIFY(store.appliedIfindexes().isEmpty());
+    QVERIFY(!store.chromePolicyEnabled());
+    QVERIFY(store.chromePinnedResolverId().isEmpty());
+    QVERIFY(store.chromePolicyDirty());
+    QVERIFY(!error.isEmpty());
+}
+
+void TestProfileStore::readsExistingSerializedSettings() {
+    QTemporaryDir dir;
+    const QString path = dir.filePath(QStringLiteral("settings.ini"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("[%General]\nactiveProfileId=home\nappliedIfindexes=3\n"
+               "chromePinnedResolverId=aaaa\nchromePolicyEnabled=true\n"
+               "[profiles]\n1\\id=home\n1\\name=Home\n1\\resolverId=aaaa\nsize=1\n");
+    file.close();
+    controld::ProfileStore store(path);
+    QCOMPARE(store.activeProfileId(), QStringLiteral("home"));
+    QCOMPARE(store.appliedIfindexes(), QList<int>({3}));
+    QCOMPARE(store.chromePinnedResolverId(), QStringLiteral("aaaa"));
+    QVERIFY(store.chromePolicyEnabled());
+    QVERIFY(!store.chromePolicyDirty());
 }
 
 QTEST_MAIN(TestProfileStore)

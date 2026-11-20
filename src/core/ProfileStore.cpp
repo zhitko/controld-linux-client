@@ -5,7 +5,9 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QSaveFile>
 #include <QSettings>
+#include <QTemporaryFile>
 #include <QUuid>
 
 namespace controld {
@@ -65,7 +67,10 @@ QString ProfileStore::addProfile(const QString& name, const QString& resolverId,
     profile.name = trimmedName;
     profile.resolverId = trimmedId;
     m_profiles.append(profile);
-    write();
+    if (!write(error)) {
+        m_profiles.removeLast();
+        return {};
+    }
     if (error != nullptr) {
         error->clear();
     }
@@ -95,9 +100,13 @@ bool ProfileStore::updateProfile(const QString& id, const QString& name, const Q
         if (profile.id != id) {
             continue;
         }
+        const Profile previous = profile;
         profile.name = trimmedName;
         profile.resolverId = trimmedId;
-        write();
+        if (!write(error)) {
+            profile = previous;
+            return false;
+        }
         if (error != nullptr) {
             error->clear();
         }
@@ -114,11 +123,16 @@ bool ProfileStore::removeProfile(const QString& id, QString* error) {
         if (m_profiles.at(index).id != id) {
             continue;
         }
-        m_profiles.removeAt(index);
+        const Profile previous = m_profiles.takeAt(index);
+        const QString previousActive = m_activeProfileId;
         if (m_activeProfileId == id) {
             m_activeProfileId.clear();
         }
-        write();
+        if (!write(error)) {
+            m_profiles.insert(index, previous);
+            m_activeProfileId = previousActive;
+            return false;
+        }
         if (error != nullptr) {
             error->clear();
         }
@@ -134,49 +148,40 @@ QString ProfileStore::activeProfileId() const {
     return m_activeProfileId;
 }
 
-void ProfileStore::setActiveProfileId(const QString& id) {
-    if (m_activeProfileId == id) {
-        return;
-    }
-    m_activeProfileId = id;
-    write();
+bool ProfileStore::setActiveProfileId(const QString& id, QString* error) {
+    return persistValue(m_activeProfileId, id, error);
 }
 
 QList<int> ProfileStore::appliedIfindexes() const {
     return m_appliedIfindexes;
 }
 
-void ProfileStore::setAppliedIfindexes(const QList<int>& ifindexes) {
-    const QList<int> sanitized = sanitizeIfindexes(ifindexes);
-    if (sanitized == m_appliedIfindexes) {
-        return;
-    }
-    m_appliedIfindexes = sanitized;
-    write();
+bool ProfileStore::setAppliedIfindexes(const QList<int>& ifindexes, QString* error) {
+    return persistValue(m_appliedIfindexes, sanitizeIfindexes(ifindexes), error);
 }
 
 bool ProfileStore::chromePolicyEnabled() const {
     return m_chromePolicyEnabled;
 }
 
-void ProfileStore::setChromePolicyEnabled(bool enabled) {
-    if (m_chromePolicyEnabled == enabled) {
-        return;
-    }
-    m_chromePolicyEnabled = enabled;
-    write();
+bool ProfileStore::setChromePolicyEnabled(bool enabled, QString* error) {
+    return persistValue(m_chromePolicyEnabled, enabled, error);
 }
 
 QString ProfileStore::chromePinnedResolverId() const {
     return m_chromePinnedResolverId;
 }
 
-void ProfileStore::setChromePinnedResolverId(const QString& resolverId) {
-    if (m_chromePinnedResolverId == resolverId) {
-        return;
-    }
-    m_chromePinnedResolverId = resolverId;
-    write();
+bool ProfileStore::setChromePinnedResolverId(const QString& resolverId, QString* error) {
+    return persistValue(m_chromePinnedResolverId, resolverId, error);
+}
+
+bool ProfileStore::chromePolicyDirty() const {
+    return m_chromePolicyDirty;
+}
+
+bool ProfileStore::setChromePolicyDirty(bool dirty, QString* error) {
+    return persistValue(m_chromePolicyDirty, dirty, error);
 }
 
 QList<int> ProfileStore::sanitizeIfindexes(const QList<int>& ifindexes) {
@@ -200,6 +205,13 @@ void ProfileStore::load() {
     bool unreadable = false;
     {
         QSettings settings(m_path, QSettings::IniFormat);
+        settings.sync();
+        // QSettings serializes the reserved "general" section as [%General].
+        // On a fresh read its keys are under "General", regardless of input case.
+        auto general = [&](const QString& key, const QVariant& fallback = QVariant()) {
+            return settings.value(QStringLiteral("General/") + key,
+                                  settings.value(QStringLiteral("general/") + key, fallback));
+        };
         const int count = settings.beginReadArray(QStringLiteral("profiles"));
         for (int index = 0; index < count; ++index) {
             settings.setArrayIndex(index);
@@ -230,7 +242,7 @@ void ProfileStore::load() {
         }
         settings.endArray();
 
-        m_activeProfileId = settings.value(QStringLiteral("general/activeProfileId")).toString();
+        m_activeProfileId = general(QStringLiteral("activeProfileId")).toString();
         if (!m_activeProfileId.isEmpty() && !profile(m_activeProfileId).has_value()) {
             m_warnings.append(QStringLiteral("Cleared an active profile id that does not exist."));
             m_activeProfileId.clear();
@@ -239,7 +251,7 @@ void ProfileStore::load() {
 
         QList<int> loadedIfindexes;
         const QStringList storedIfindexes =
-            settings.value(QStringLiteral("general/appliedIfindexes")).toStringList();
+            general(QStringLiteral("appliedIfindexes")).toStringList();
         for (const QString& text : storedIfindexes) {
             bool ok = false;
             const int ifindex = text.toInt(&ok);
@@ -254,10 +266,9 @@ void ProfileStore::load() {
             repaired = true;
         }
 
-        m_chromePolicyEnabled =
-            settings.value(QStringLiteral("general/chromePolicyEnabled"), false).toBool();
-        m_chromePinnedResolverId =
-            settings.value(QStringLiteral("general/chromePinnedResolverId")).toString();
+        m_chromePolicyEnabled = general(QStringLiteral("chromePolicyEnabled"), false).toBool();
+        m_chromePinnedResolverId = general(QStringLiteral("chromePinnedResolverId")).toString();
+        m_chromePolicyDirty = general(QStringLiteral("chromePolicyDirty"), false).toBool();
         if (!m_chromePinnedResolverId.isEmpty() && !isValidResolverId(m_chromePinnedResolverId)) {
             m_warnings.append(
                 QStringLiteral("Cleared a stored Chrome resolver ID that failed validation."));
@@ -271,41 +282,75 @@ void ProfileStore::load() {
         m_warnings.append(QStringLiteral("Settings could not be read."));
     }
     if (repaired) {
-        write();
+        QString error;
+        if (!write(&error)) {
+            m_warnings.append(error);
+        }
     }
 }
 
-void ProfileStore::write() {
+bool ProfileStore::write(QString* error) {
+    auto failed = [&](const QString& detail) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Could not save settings to %1: %2").arg(m_path, detail);
+        }
+        return false;
+    };
     const QFileInfo info(m_path);
-    QDir().mkpath(info.dir().absolutePath());
+    if (!QDir().mkpath(info.dir().absolutePath())) {
+        return failed(QStringLiteral("could not create the settings directory"));
+    }
+    QTemporaryFile staged(info.dir().filePath(QStringLiteral(".controld-settings-XXXXXX")));
+    if (!staged.open()) {
+        return failed(staged.errorString());
+    }
+    const QString stagedPath = staged.fileName();
+    staged.close();
 
-    QSettings settings(m_path, QSettings::IniFormat);
-    settings.clear();
-    settings.beginWriteArray(QStringLiteral("profiles"));
-    for (int index = 0; index < m_profiles.size(); ++index) {
-        settings.setArrayIndex(index);
-        settings.setValue(QStringLiteral("id"), m_profiles.at(index).id);
-        settings.setValue(QStringLiteral("name"), m_profiles.at(index).name);
-        settings.setValue(QStringLiteral("resolverId"), m_profiles.at(index).resolverId);
+    {
+        QSettings settings(stagedPath, QSettings::IniFormat);
+        settings.clear();
+        settings.beginWriteArray(QStringLiteral("profiles"));
+        for (int index = 0; index < m_profiles.size(); ++index) {
+            settings.setArrayIndex(index);
+            settings.setValue(QStringLiteral("id"), m_profiles.at(index).id);
+            settings.setValue(QStringLiteral("name"), m_profiles.at(index).name);
+            settings.setValue(QStringLiteral("resolverId"), m_profiles.at(index).resolverId);
+        }
+        settings.endArray();
+        settings.setValue(QStringLiteral("General/activeProfileId"), m_activeProfileId);
+        QStringList ifindexes;
+        for (const int ifindex : m_appliedIfindexes) {
+            ifindexes.append(QString::number(ifindex));
+        }
+        settings.setValue(QStringLiteral("General/appliedIfindexes"), ifindexes);
+        settings.setValue(QStringLiteral("General/chromePolicyEnabled"), m_chromePolicyEnabled);
+        settings.setValue(QStringLiteral("General/chromePinnedResolverId"),
+                          m_chromePinnedResolverId);
+        settings.setValue(QStringLiteral("General/chromePolicyDirty"), m_chromePolicyDirty);
+        settings.sync();
+        if (settings.status() != QSettings::NoError) {
+            return failed(QStringLiteral("could not serialize settings"));
+        }
     }
-    settings.endArray();
-    settings.setValue(QStringLiteral("general/activeProfileId"), m_activeProfileId);
-    QStringList ifindexes;
-    for (const int ifindex : m_appliedIfindexes) {
-        ifindexes.append(QString::number(ifindex));
+    QFile serialized(stagedPath);
+    if (!serialized.open(QIODevice::ReadOnly)) {
+        return failed(serialized.errorString());
     }
-    settings.setValue(QStringLiteral("general/appliedIfindexes"), ifindexes);
-    settings.setValue(QStringLiteral("general/chromePolicyEnabled"), m_chromePolicyEnabled);
-    settings.setValue(QStringLiteral("general/chromePinnedResolverId"), m_chromePinnedResolverId);
-    settings.sync();
-    secureFile();
-}
-
-void ProfileStore::secureFile() const {
-    if (!QFile::exists(m_path)) {
-        return;
+    const QByteArray bytes = serialized.readAll();
+    if (serialized.error() != QFileDevice::NoError) {
+        return failed(serialized.errorString());
     }
-    QFile::setPermissions(m_path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    QSaveFile destination(m_path);
+    if (!destination.open(QIODevice::WriteOnly) ||
+        !destination.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner) ||
+        destination.write(bytes) != bytes.size() || !destination.commit()) {
+        return failed(destination.errorString());
+    }
+    if (error != nullptr) {
+        error->clear();
+    }
+    return true;
 }
 
 } // namespace controld

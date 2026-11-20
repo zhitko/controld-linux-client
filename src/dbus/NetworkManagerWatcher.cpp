@@ -57,7 +57,7 @@ QString objectPath(const QVariant& value) {
 QStringList objectPaths(const QVariant& value) {
     QStringList paths;
     if (value.canConvert<QDBusArgument>()) {
-        QDBusArgument argument = value.value<QDBusArgument>();
+        const QDBusArgument argument = value.value<QDBusArgument>();
         if (argument.currentType() == QDBusArgument::ArrayType) {
             argument.beginArray();
             while (!argument.atEnd()) {
@@ -279,7 +279,8 @@ void NetworkManagerWatcher::refresh() {
     subscribePrimary(primary);
 
     const bool structural = index != m_ifindex || name != m_name;
-    const bool activation = m_activationPending;
+    // A replacement may already be activated before we subscribe to its signals.
+    const bool activation = m_activationPending || (primary != m_primaryPath && index > 0);
     m_ifindex = index;
     m_name = name;
     m_error = error;

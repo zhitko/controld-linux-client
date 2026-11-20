@@ -16,6 +16,7 @@ class TestChromePolicy : public QObject {
     void helperWritesAndClearsOnlyRequestedFiles();
     void helperRejectsBadIdsAndSymlinks();
     void managedPathsAreChromeAndChromium();
+    void clearRejectsSymlinkParents();
 };
 
 void TestChromePolicy::documentHasOnlySecureDnsKeys() {
@@ -108,6 +109,30 @@ void TestChromePolicy::managedPathsAreChromeAndChromium() {
     const QStringList paths = controld::ChromePolicy::managedPolicyPaths();
     QCOMPARE(paths, QStringList({QStringLiteral("/etc/opt/chrome/policies/managed/controld.json"),
                                  QStringLiteral("/etc/chromium/policies/managed/controld.json")}));
+}
+
+void TestChromePolicy::clearRejectsSymlinkParents() {
+    QTemporaryDir dir;
+    const QString outside = dir.filePath(QStringLiteral("outside"));
+    QVERIFY(QDir().mkpath(outside));
+    const QString victim = outside + QStringLiteral("/controld.json");
+    QFile file(victim);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("unrelated policy");
+    file.close();
+    const QString link = dir.filePath(QStringLiteral("managed"));
+    QVERIFY(QFile::link(outside, link));
+    const QString target = link + QStringLiteral("/controld.json");
+    QVERIFY(controld::runChromePolicyHelper({QStringLiteral("clear")}, {target}).code != 0);
+    QVERIFY(
+        controld::runChromePolicyHelper({QStringLiteral("apply"), QStringLiteral("aaaa")}, {target})
+            .code != 0);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), QByteArray("unrelated policy"));
+    QCOMPARE(controld::runChromePolicyHelper(
+                 {QStringLiteral("clear")}, {dir.filePath(QStringLiteral("missing/controld.json"))})
+                 .code,
+             0);
 }
 
 QTEST_MAIN(TestChromePolicy)

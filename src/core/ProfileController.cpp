@@ -114,7 +114,10 @@ OperationResult ProfileController::activateProfile(const QString& id) {
         result.notification = QStringLiteral("Profile was not found.");
         return result;
     }
-    m_store.setActiveProfileId(id);
+    QString error;
+    if (!m_store.setActiveProfileId(id, &error)) {
+        return persistenceFailure(error);
+    }
     return applyDesired(true);
 }
 
@@ -145,13 +148,18 @@ OperationResult ProfileController::flush() {
     }
 
     const std::optional<Profile> selected = m_store.profile(m_store.activeProfileId());
+    if (!selected.has_value() || m_appliedProfileId != selected->id ||
+        m_appliedResolverId != selected->resolverId) {
+        return finish(false, RuntimeStatus::Failed,
+                      QStringLiteral("DNS cache flushed, but the selected profile has not been "
+                                     "successfully applied. Activate it again to retry."),
+                      true, true, false);
+    }
     const ResolveResult lookup = m_resolved.resolveHostname(
         QString::fromLatin1(Verification::queryName()), Verification::queryFlags());
-    if (!Verification::passed(lookup) || !selected.has_value()) {
-        const QString detail = Verification::passed(lookup)
-                                   ? QStringLiteral("The selected profile no longer exists.")
-                                   : Verification::failureDetail(lookup);
-        return finish(false, RuntimeStatus::Failed, detail, true, true, false);
+    if (!Verification::passed(lookup)) {
+        return finish(false, RuntimeStatus::Failed, Verification::failureDetail(lookup), true, true,
+                      false);
     }
 
     const QString detail =
@@ -168,18 +176,20 @@ OperationResult ProfileController::setChromePolicyEnabled(bool enabled) {
     result.detail = m_detail;
 
     if (!enabled) {
-        if (!m_store.chromePinnedResolverId().isEmpty()) {
-            const CallResult cleared = m_chrome.clear();
+        if (m_store.chromePolicyDirty() || !m_store.chromePinnedResolverId().isEmpty()) {
+            const CallResult cleared = clearChromePolicy();
             if (!cleared.ok) {
                 result.ok = false;
                 result.notification =
                     QStringLiteral("Could not remove the Chrome policy: %1").arg(cleared.summary());
                 return result;
             }
-            m_store.setChromePinnedResolverId({});
             result.suggestChromeRestart = true;
         }
-        m_store.setChromePolicyEnabled(false);
+        QString error;
+        if (!m_store.setChromePolicyEnabled(false, &error)) {
+            return persistenceFailure(error);
+        }
         result.ok = true;
         if (result.notification.isEmpty()) {
             result.notification =
@@ -192,7 +202,10 @@ OperationResult ProfileController::setChromePolicyEnabled(bool enabled) {
         return result;
     }
 
-    m_store.setChromePolicyEnabled(true);
+    QString error;
+    if (!m_store.setChromePolicyEnabled(true, &error)) {
+        return persistenceFailure(error);
+    }
     const std::optional<Profile> selected = m_store.profile(m_store.activeProfileId());
     if (!selected.has_value()) {
         result.ok = true;
@@ -200,20 +213,19 @@ OperationResult ProfileController::setChromePolicyEnabled(bool enabled) {
                                              "written when a profile is activated.");
         return result;
     }
-    if (m_store.chromePinnedResolverId() == selected->resolverId) {
+    if (!m_store.chromePolicyDirty() && m_store.chromePinnedResolverId() == selected->resolverId) {
         result.ok = true;
         result.notification =
             QStringLiteral("Chrome Secure DNS is already pinned to this profile.");
         return result;
     }
-    const CallResult written = m_chrome.apply(selected->resolverId);
+    const CallResult written = applyChromePolicy(selected->resolverId);
     if (!written.ok) {
         result.ok = false;
         result.notification =
             QStringLiteral("Could not write the Chrome policy: %1").arg(written.summary());
         return result;
     }
-    m_store.setChromePinnedResolverId(selected->resolverId);
     result.ok = true;
     result.suggestChromeRestart = true;
     result.notification =
@@ -226,8 +238,8 @@ OperationResult ProfileController::startup() {
     if (!m_store.activeProfileId().isEmpty()) {
         return applyDesired(false);
     }
-    if (!m_store.appliedIfindexes().isEmpty() ||
-        (m_store.chromePolicyEnabled() && !m_store.chromePinnedResolverId().isEmpty())) {
+    if (!m_store.appliedIfindexes().isEmpty() || m_store.chromePolicyDirty() ||
+        !m_store.chromePinnedResolverId().isEmpty()) {
         return runExclusive([this](bool announce) { return disableNow(announce); }, false, true);
     }
     return finish(true, RuntimeStatus::Disabled,
@@ -300,13 +312,18 @@ OperationResult ProfileController::applyDesired(bool announce) {
 }
 
 OperationResult ProfileController::applyDesiredNow(bool announce) {
+    m_appliedProfileId.clear();
+    m_appliedResolverId.clear();
     const QString id = m_store.activeProfileId();
     if (id.isEmpty()) {
         return disableNow(announce);
     }
     const std::optional<Profile> selected = m_store.profile(id);
     if (!selected.has_value()) {
-        m_store.setActiveProfileId({});
+        QString error;
+        if (!m_store.setActiveProfileId({}, &error)) {
+            return persistenceFailure(error, announce);
+        }
         return finish(false, RuntimeStatus::Failed,
                       QStringLiteral("The selected profile no longer exists."), announce, false,
                       false);
@@ -333,18 +350,24 @@ OperationResult ProfileController::applyDesiredNow(bool announce) {
                       announce, false, false);
     }
 
-    const CallResult dns = m_resolved.setLinkDnsEx(ifindex, servers);
-    if (!dns.ok) {
-        return finish(false, RuntimeStatus::Failed,
-                      QStringLiteral("Could not set DNS servers: %1").arg(dns.summary()), announce,
-                      false, false);
-    }
-
+    // Persist cleanup intent before the first system mutation.
+    const QList<int> previousDirty = m_store.appliedIfindexes();
     QList<int> dirty = m_store.appliedIfindexes();
     if (!dirty.contains(ifindex)) {
         dirty.append(ifindex);
     }
-    m_store.setAppliedIfindexes(dirty);
+    QString persistenceError;
+    if (!m_store.setAppliedIfindexes(dirty, &persistenceError)) {
+        return persistenceFailure(persistenceError, announce);
+    }
+    const CallResult dns = m_resolved.setLinkDnsEx(ifindex, servers);
+    if (!dns.ok) {
+        QString detail = QStringLiteral("Could not set DNS servers: %1").arg(dns.summary());
+        if (!m_store.setAppliedIfindexes(previousDirty, &persistenceError)) {
+            detail += QLatin1Char(' ') + persistenceError;
+        }
+        return finish(false, RuntimeStatus::Failed, detail, announce, false, false);
+    }
 
     const CallResult dot = m_resolved.setLinkDnsOverTls(ifindex, QStringLiteral("yes"));
     if (!dot.ok) {
@@ -385,7 +408,9 @@ OperationResult ProfileController::applyDesiredNow(bool announce) {
         warnings.append(
             QStringLiteral("Could not revert interface %1: %2").arg(old).arg(reverted.summary()));
     }
-    m_store.setAppliedIfindexes(remaining);
+    if (!m_store.setAppliedIfindexes(remaining, &persistenceError)) {
+        return persistenceFailure(persistenceError, announce);
+    }
 
     const CallResult flushed = m_resolved.flushCaches();
     if (!flushed.ok) {
@@ -401,6 +426,9 @@ OperationResult ProfileController::applyDesiredNow(bool announce) {
                       false, false);
     }
 
+    m_appliedProfileId = selected->id;
+    m_appliedResolverId = selected->resolverId;
+
     QString detail =
         QStringLiteral("Profile \"%1\" (%2) is active on %3. Verified %4 canonical name %5.")
             .arg(selected->name, selected->resolverId, activeInterfaceLabel(),
@@ -409,13 +437,13 @@ OperationResult ProfileController::applyDesiredNow(bool announce) {
 
     bool policyChanged = false;
     bool policyFailed = false;
-    if (m_store.chromePolicyEnabled() && m_store.chromePinnedResolverId() != selected->resolverId) {
-        const CallResult written = m_chrome.apply(selected->resolverId);
+    if (m_store.chromePolicyEnabled() &&
+        (m_store.chromePolicyDirty() || m_store.chromePinnedResolverId() != selected->resolverId)) {
+        const CallResult written = applyChromePolicy(selected->resolverId);
         if (!written.ok) {
             policyFailed = true;
             detail += QStringLiteral(" Chrome policy was not updated: %1").arg(written.summary());
         } else {
-            m_store.setChromePinnedResolverId(selected->resolverId);
             policyChanged = true;
         }
     }
@@ -428,12 +456,16 @@ OperationResult ProfileController::applyDesiredNow(bool announce) {
 }
 
 OperationResult ProfileController::disableNow(bool announce) {
-    m_store.setActiveProfileId({});
+    QString error;
+    if (!m_store.setActiveProfileId({}, &error)) {
+        return persistenceFailure(error, announce);
+    }
+    m_appliedProfileId.clear();
+    m_appliedResolverId.clear();
     const QList<int> dirty = m_store.appliedIfindexes();
     const bool chromeNeedsClear =
-        m_store.chromePolicyEnabled() && !m_store.chromePinnedResolverId().isEmpty();
+        m_store.chromePolicyDirty() || !m_store.chromePinnedResolverId().isEmpty();
     if (dirty.isEmpty() && !chromeNeedsClear) {
-        m_store.setActiveProfileId({});
         return finish(true, RuntimeStatus::Disabled,
                       QStringLiteral("ControlD is off. DNS settings were not changed."), announce,
                       false, false);
@@ -451,8 +483,9 @@ OperationResult ProfileController::disableNow(bool announce) {
     }
 
     const bool revertedSomething = !dirty.isEmpty();
-    m_store.setAppliedIfindexes({});
-    m_store.setActiveProfileId({});
+    if (!m_store.setAppliedIfindexes({}, &error)) {
+        return persistenceFailure(error, announce);
+    }
 
     QStringList problems;
     const CallResult flushed = m_resolved.flushCaches();
@@ -462,12 +495,11 @@ OperationResult ProfileController::disableNow(bool announce) {
 
     bool policyChanged = false;
     if (chromeNeedsClear) {
-        const CallResult cleared = m_chrome.clear();
+        const CallResult cleared = clearChromePolicy();
         if (!cleared.ok) {
             problems.append(
                 QStringLiteral("Could not remove the Chrome policy: %1").arg(cleared.summary()));
         } else {
-            m_store.setChromePinnedResolverId({});
             policyChanged = true;
         }
     }
@@ -523,6 +555,42 @@ QString ProfileController::activeInterfaceLabel() const {
         return QString::number(m_links.ifindex());
     }
     return QStringLiteral("the active link");
+}
+
+OperationResult ProfileController::persistenceFailure(const QString& error, bool announce) {
+    return finish(false, RuntimeStatus::Failed, error, announce, false, false);
+}
+
+CallResult ProfileController::applyChromePolicy(const QString& resolverId) {
+    QString error;
+    if (!m_store.setChromePolicyDirty(true, &error)) {
+        return CallResult::failure({}, error);
+    }
+    const CallResult written = m_chrome.apply(resolverId);
+    if (!written.ok) {
+        return written;
+    }
+    if (!m_store.setChromePinnedResolverId(resolverId, &error) ||
+        !m_store.setChromePolicyDirty(false, &error)) {
+        return CallResult::failure({}, error);
+    }
+    return CallResult::success();
+}
+
+CallResult ProfileController::clearChromePolicy() {
+    QString error;
+    if (!m_store.setChromePolicyDirty(true, &error)) {
+        return CallResult::failure({}, error);
+    }
+    const CallResult cleared = m_chrome.clear();
+    if (!cleared.ok) {
+        return cleared;
+    }
+    if (!m_store.setChromePinnedResolverId({}, &error) ||
+        !m_store.setChromePolicyDirty(false, &error)) {
+        return CallResult::failure({}, error);
+    }
+    return CallResult::success();
 }
 
 } // namespace controld

@@ -10,3 +10,4 @@ __pycache__/
 AppDir/
 build-appimage/
 .appimage-tools/
+aqtinstall.log

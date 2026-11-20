@@ -4,6 +4,16 @@
  "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
 <policyconfig>
   <vendor>Vladimir Zhitko</vendor>
+  <action id="com.vzhitko.controldtray.configure-dns">
+    <description>Configure ControlD DNS</description>
+    <message>Authentication is required to configure or restore DNS for ControlD Tray</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.imply">org.freedesktop.resolve1.set-dns-servers org.freedesktop.resolve1.set-dns-over-tls org.freedesktop.resolve1.set-domains org.freedesktop.resolve1.set-default-route org.freedesktop.resolve1.revert</annotate>
+  </action>
   <action id="com.vzhitko.controldtray.chrome-policy">
     <description>Update the ControlD Chrome Secure DNS policy</description>
     <message>Authentication is required to write the ControlD managed Chrome and Chromium Secure DNS policy</message>

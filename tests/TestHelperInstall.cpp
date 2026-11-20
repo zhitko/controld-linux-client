@@ -88,6 +88,7 @@ class TestHelperInstall : public QObject {
     void inspectsAFakeRootWithoutRequiringRootOwnership();
     void prepareStagesFilesAndTheInstallerCopiesOnlyThosePaths();
     void installerRefusesSymlinksAndChangedFiles();
+    void damagedInstallRetainsOwnership();
 };
 
 void TestHelperInstall::appImageLaunchRequiresBothAbsolutePaths() {
@@ -339,7 +340,7 @@ void TestHelperInstall::installerRefusesSymlinksAndChangedFiles() {
     changed.close();
     QCOMPARE(runInstaller({QStringLiteral("uninstall")}, root.path(), &error), 0);
     QVERIFY(QFile::exists(root.path() + controld::helperDestination()));
-    QVERIFY(!QFile::exists(root.path() + controld::policyDestination()));
+    QVERIFY(QFile::exists(root.path() + controld::policyDestination()));
     QVERIFY(error.contains(QStringLiteral("Left")));
 
     const QString sentinelPath = root.path() + QStringLiteral("/sentinel");
@@ -348,9 +349,10 @@ void TestHelperInstall::installerRefusesSymlinksAndChangedFiles() {
     sentinel.write("secret");
     sentinel.close();
     const QString link = root.path() + controld::policyDestination();
+    QVERIFY(QFile::remove(link));
     QVERIFY(QDir().mkpath(QFileInfo(link).dir().absolutePath()));
     QVERIFY(QFile::link(sentinelPath, link));
-    QCOMPARE(runInstaller({QStringLiteral("install"), stage.path()}, root.path(), &error), 2);
+    QVERIFY(runInstaller({QStringLiteral("install"), stage.path()}, root.path(), &error) != 0);
     QFile reread(sentinelPath);
     QVERIFY(reread.open(QIODevice::ReadOnly));
     QCOMPARE(reread.readAll(), QByteArray("secret"));
@@ -364,6 +366,50 @@ void TestHelperInstall::installerRefusesSymlinksAndChangedFiles() {
         QVERIFY(runInstaller({QStringLiteral("uninstall")}, {}, &unprivileged) != 0);
         QVERIFY(unprivileged.contains(QStringLiteral("root")));
     }
+}
+
+void TestHelperInstall::damagedInstallRetainsOwnership() {
+    QTemporaryDir root;
+    const QString helper = root.path() + controld::helperDestination();
+    const QString policy = root.path() + controld::policyDestination();
+    const QString manifestPath = root.path() + controld::manifestDestination();
+    QVERIFY(QDir().mkpath(QFileInfo(helper).absolutePath()));
+    QVERIFY(QDir().mkpath(QFileInfo(policy).absolutePath()));
+    QVERIFY(QDir().mkpath(QFileInfo(manifestPath).absolutePath()));
+    QFile h(helper);
+    QVERIFY(h.open(QIODevice::WriteOnly));
+    h.write("helper");
+    h.close();
+    QVERIFY(h.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    QFile p(policy);
+    QVERIFY(p.open(QIODevice::WriteOnly));
+    p.write(policyDocument().toUtf8());
+    p.close();
+    const QList<controld::ManifestEntry> entries = {
+        {QStringLiteral("0755"), controld::helperDestination(), QFileInfo(helper).fileName(),
+         QString::fromLatin1(sha256(helper))},
+        {QStringLiteral("0644"), controld::policyDestination(), QFileInfo(policy).fileName(),
+         QString::fromLatin1(sha256(policy))}};
+    QFile manifest(manifestPath);
+    QVERIFY(manifest.open(QIODevice::WriteOnly));
+    manifest.write(controld::manifestText(entries).toUtf8());
+    manifest.close();
+    QVERIFY(controld::inspectSystemHelper(root.path(), false).ready);
+    QVERIFY(QFile::remove(helper));
+    auto status = controld::inspectSystemHelper(root.path(), false);
+    QVERIFY(status.managedByApp);
+    QVERIFY(!status.ready);
+    QVERIFY(h.open(QIODevice::WriteOnly));
+    h.write("changed helper");
+    h.close();
+    QVERIFY(h.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+    status = controld::inspectSystemHelper(root.path(), false);
+    QVERIFY(status.managedByApp);
+    QVERIFY(!status.ready);
+    QVERIFY(QFile::remove(policy));
+    status = controld::inspectSystemHelper(root.path(), false);
+    QVERIFY(status.managedByApp);
+    QVERIFY(!status.ready);
 }
 
 #include "TestHelperInstall.moc"

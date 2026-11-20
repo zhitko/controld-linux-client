@@ -20,6 +20,7 @@ class TestTrayMenu : public QObject {
     void menuIsFilledBeforeTheIconIsShown();
     void leftClickDoesNotOpenSettings();
     void settingsCanActivateAndDisableTheSelectedProfile();
+    void fallbackWindowQuitsWhenClosed();
 };
 
 struct Fixture {
@@ -151,6 +152,26 @@ void TestTrayMenu::settingsCanActivateAndDisableTheSelectedProfile() {
     QVERIFY(fixture.store.activeProfileId().isEmpty());
     QCOMPARE(fixture.controller.status(), controld::RuntimeStatus::Disabled);
     QCOMPARE(profiles->item(0)->text(), QStringLiteral("Home (abcd1234)"));
+}
+
+void TestTrayMenu::fallbackWindowQuitsWhenClosed() {
+    Fixture fixture;
+    QApplication::setQuitOnLastWindowClosed(false);
+    fixture.settings.showWithoutTray();
+    QVERIFY(QApplication::quitOnLastWindowClosed());
+    bool timedOut = false;
+    QTimer watchdog;
+    watchdog.setSingleShot(true);
+    connect(&watchdog, &QTimer::timeout, qApp, [&]() {
+        timedOut = true;
+        QApplication::quit();
+    });
+    watchdog.start(1000);
+    QTimer::singleShot(0, &fixture.settings, &QWidget::close);
+    QApplication::exec();
+    QVERIFY(!timedOut);
+    QVERIFY(!fixture.settings.isVisible());
+    QApplication::setQuitOnLastWindowClosed(false);
 }
 
 QTEST_MAIN(TestTrayMenu)

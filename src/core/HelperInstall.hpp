@@ -14,6 +14,8 @@ QString policyDestination();
 QString libraryDirectory();
 QString manifestDestination();
 QString policyActionId();
+QString dnsPolicyActionId();
+bool policyHasDnsAuthorization(const QString& text);
 
 bool installDestinationAllowed(const QString& destination);
 bool policyTextAcceptable(const QString& text);
@@ -55,6 +57,7 @@ LibraryPlan librariesForHelper(const QString& helperPath, const QString& appDir)
 struct SystemHelperStatus {
     bool ready = false;
     bool managedByApp = false;
+    bool groupedDnsAuthorization = false;
     QString detail;
 };
 

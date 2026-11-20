@@ -15,6 +15,7 @@ class SettingsWindow : public QDialog {
     Q_OBJECT
 
   public:
+    void showWithoutTray();
     SettingsWindow(ProfileController& controller, QWidget* parent = nullptr);
 
   private slots:

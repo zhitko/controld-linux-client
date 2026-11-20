@@ -7,6 +7,7 @@ CONTROLD_TRAY_TEST_INSTALL=allow-test-root. An unprivileged test sets only
 CONTROLD_TRAY_INSTALL_ROOT.
 """
 
+import glob
 import hashlib
 import os
 import stat
@@ -202,12 +203,25 @@ def write_bytes_atomic(data, destination, mode):
     os.rename(tmp, destination)
 
 
-def write_atomic(source, destination, mode, expected_hash):
-    data = read_file_bytes(source)
-    actual = hashlib.sha256(data).hexdigest()
-    if actual != expected_hash:
-        fail("Staged file does not match the manifest: %s" % source, 2)
-    write_bytes_atomic(data, destination, mode)
+def package_owned_paths(root, destinations):
+    """Consult dpkg's file ownership lists, including byte-identical replacements."""
+    owned = set()
+    wanted = set(destinations)
+    info_dir = root + "/var/lib/dpkg/info"
+    refuse_symlink_parents(info_dir)
+    for listing in glob.glob(info_dir + "/*.list"):
+        if not regular_file(listing):
+            fail("Cannot safely read package ownership: %s" % listing)
+        with open(listing, "r", encoding="utf-8") as handle:
+            owned.update(line.rstrip("\n") for line in handle if line.rstrip("\n") in wanted)
+    return owned
+
+
+def validate_destination(path):
+    refuse_symlink_parents(path)
+    info = lstat_or_none(path)
+    if info is not None and not stat.S_ISREG(info.st_mode):
+        fail("Refusing to replace a non-regular file: %s" % path, 2)
 
 
 def cmd_install(stage):
@@ -226,13 +240,55 @@ def cmd_install(stage):
     if policy_source is None or not policy_text_ok(policy_source):
         fail("The staged policy file is not the ControlD Tray polkit action.")
     root = install_root()
+    destinations = [entry[1] for entry in entries]
+    if package_owned_paths(root, destinations):
+        fail("The helper paths are owned by a Debian package. Use the package manager to update them.")
+    if not regular_file(root + MANIFEST_DEST) and (
+        lstat_or_none(root + HELPER_DEST) is not None or
+        lstat_or_none(root + POLICY_DEST) is not None
+    ):
+        fail("Refusing to replace an existing helper without an AppImage ownership manifest.")
+    # Preflight every source and destination before committing any system file.
+    prepared = []
     for mode, dest, name, digest in entries:
-        write_atomic(stage + "/" + name, root + dest, mode, digest)
-    write_bytes_atomic(manifest_bytes, root + MANIFEST_DEST, 0o644)
-    if read_file_bytes(root + MANIFEST_DEST) != manifest_bytes:
-        fail("The installed manifest does not match the staged manifest.", 2)
-    if not policy_text_ok(root + POLICY_DEST):
-        fail("The installed policy file failed verification.", 2)
+        data = read_file_bytes(stage + "/" + name)
+        if hashlib.sha256(data).hexdigest() != digest:
+            fail("Staged file does not match the manifest: %s" % name, 2)
+        validate_destination(root + dest)
+        prepared.append((root + dest, data, mode))
+    validate_destination(root + MANIFEST_DEST)
+    # The manifest doubles as a recovery journal after interruption. Inspection
+    # verifies every digest, so an incomplete install is repairable, never ready.
+    writes = [(root + MANIFEST_DEST, manifest_bytes, 0o644)] + prepared
+    backups = {}
+    for destination, _data, _mode in writes:
+        info = lstat_or_none(destination)
+        backups[destination] = None if info is None else (
+            read_file_bytes(destination), stat.S_IMODE(info.st_mode)
+        )
+    attempted = []
+    try:
+        for destination, data, mode in writes:
+            attempted.append(destination)
+            write_bytes_atomic(data, destination, mode)
+    except (OSError, SystemExit):
+        rollback_failed = False
+        for destination in reversed(attempted):
+            # Retain the journal if any other rollback failed.
+            if destination == root + MANIFEST_DEST and rollback_failed:
+                continue
+            try:
+                previous = backups[destination]
+                if previous is None:
+                    refuse_symlink_parents(destination)
+                    if regular_file(destination):
+                        os.unlink(destination)
+                else:
+                    write_bytes_atomic(previous[0], destination, previous[1])
+            except (OSError, SystemExit) as error:
+                rollback_failed = True
+                sys.stderr.write("Could not roll back %s: %s\n" % (destination, error))
+        raise
 
 
 def remove_if_matches(path, expected_hash):
@@ -257,7 +313,20 @@ def cmd_uninstall():
         fail("There is no ControlD Tray helper manifest to uninstall.")
     manifest_bytes = read_file_bytes(manifest_path)
     entries = read_manifest(manifest_path)
+    owned = package_owned_paths(root, [entry[1] for entry in entries])
+    helper_entry = next(entry for entry in entries if entry[1] == HELPER_DEST)
+    helper_path = root + HELPER_DEST
+    refuse_symlink_parents(helper_path)
+    helper_replaced = regular_file(helper_path) and sha256_file(helper_path) != helper_entry[3]
+    shared_owned = HELPER_DEST in owned or POLICY_DEST in owned
     for _mode, dest, _name, digest in entries:
+        if dest in owned or (shared_owned and dest in (HELPER_DEST, POLICY_DEST)):
+            sys.stderr.write("Left package-owned helper files in place: %s\n" % dest)
+            continue
+        if helper_replaced and not shared_owned:
+            # An unrecognized replacement may still require the policy and private libraries.
+            sys.stderr.write("Left %s in place because the helper was replaced.\n" % dest)
+            continue
         full = root + dest
         if dest == POLICY_DEST and regular_file(full) and not policy_text_ok(full):
             fail("Refusing to remove a policy file that is not the ControlD Tray action.", 2)
