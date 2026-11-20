@@ -7,6 +7,7 @@
 class QCheckBox;
 class QLabel;
 class QListWidget;
+class QPushButton;
 
 namespace controld {
 
@@ -22,6 +23,9 @@ class SettingsWindow : public QDialog {
     void addProfile();
     void editProfile();
     void removeProfile();
+    void refreshHelperSection();
+    void installHelper();
+    void uninstallHelper();
 
   private:
     QString selectedProfileId() const;
@@ -32,6 +36,9 @@ class SettingsWindow : public QDialog {
     QListWidget* m_profiles = nullptr;
     QCheckBox* m_chrome = nullptr;
     QCheckBox* m_autostart = nullptr;
+    QLabel* m_helperNote = nullptr;
+    QPushButton* m_installHelper = nullptr;
+    QPushButton* m_uninstallHelper = nullptr;
 };
 
 } // namespace controld

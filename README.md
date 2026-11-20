@@ -33,6 +33,27 @@ The package installs:
 
 Launch **ControlD Tray** from the application menu. In Settings, **Start ControlD Tray when I log in** writes `~/.config/autostart/controld-tray.desktop`. That file is marked `X-ControlD-Tray-Autostart=true`, and the checkbox will not delete an autostart file it did not create.
 
+### AppImage
+
+GitHub Actions also builds `controld-tray-x86_64.AppImage` on Ubuntu 20.04 (glibc 2.31) and uploads it as a workflow artifact. A `v*` tag attaches that AppImage and the `.deb` to the GitHub release. Distributions with glibc 2.31 or newer can run the AppImage; that includes Ubuntu 20.04 and later.
+
+```bash
+chmod +x controld-tray-x86_64.AppImage
+./controld-tray-x86_64.AppImage
+```
+
+On Ubuntu 22.04 and newer, install `libfuse2` if the kernel cannot mount the AppImage (`sudo apt install libfuse2`). `APPIMAGE_EXTRACT_AND_RUN=1 ./controld-tray-x86_64.AppImage` runs it without FUSE.
+
+DNS switching does not install anything. It uses systemd-resolved's own polkit actions. The optional Chrome helper cannot live only inside the image: polkit will run a program only when that program is root-owned and named by a system policy file. The AppImage shows **Install helper** in the tray menu and in Settings. Nothing is written until you confirm. The confirmation lists every path. Polkit then asks to run the system `python3`, which copies only those files:
+
+- `/usr/libexec/controld-tray-chrome-policy`
+- `/usr/lib/controld-tray/` (the helper's private libraries, plus a manifest of their hashes). zlib and libcom-err stay on the system; they are part of the Ubuntu base and linuxdeploy does not bundle them. OpenSSL is not taken from the host.
+- `/usr/share/polkit-1/actions/com.vzhitko.controldtray.policy`
+
+**Uninstall helper** removes a file only when its contents still match that manifest, so a later `.deb` install of the same paths is left in place. If this AppImage wrote a managed Chrome policy, uninstall removes that policy first. DNS settings are not changed. If a helper is already installed and there is no AppImage manifest, the AppImage uses it and does not offer to replace it.
+
+**Start ControlD Tray when I log in** writes the autostart entry's `Exec` to the AppImage file itself (not the temporary mount path) and copies the icon to `~/.local/share/icons/hicolor/256x256/apps/controld-tray.png`. Move the AppImage and turn the checkbox off and on again so the path is updated. Building the image locally uses `packaging/build-appimage.sh` with `QT_ROOT` pointing at a Qt 6.4 `gcc_64` prefix.
+
 The first profile switch prompts for administrator authentication. systemd-resolved caches that grant briefly (`auth_admin_keep`).
 
 ## Build
@@ -47,7 +68,7 @@ ctest --test-dir build --output-on-failure
 cpack -G DEB --config build/CPackConfig.cmake
 ```
 
-The build uses `-Wall -Wextra -Wpedantic -Werror`. Tests do not need a desktop session. CI on GitHub Actions runs the same build, tests, `clang-format`, `clang-tidy`, and the Debian package.
+The build uses `-Wall -Wextra -Wpedantic -Werror`. Tests do not need a desktop session. CI on GitHub Actions runs the same build, tests, `clang-format`, `clang-tidy`, and the Debian package on the current Ubuntu runner, and builds the AppImage in an Ubuntu 20.04 container.
 
 ## How it works
 
@@ -101,6 +122,7 @@ Those are the [Chrome DnsOverHttpsMode](https://chromeenterprise.google/policies
 - `IResolvedBackend` / `SystemdResolvedBackend` — resolved D-Bus calls (the interface is what tests mock)
 - `NetworkManagerWatcher` — primary connection and activation signals
 - `PkexecChromePolicyWriter` — optional managed-policy helper
+- `HelperInstallSession` — AppImage-only install and uninstall of that helper
 - `ProfileController` — apply, revert, flush, and verification
 - Tray menu, settings window, and profile editor
 
@@ -112,5 +134,6 @@ Those are the [Chrome DnsOverHttpsMode](https://chromeenterprise.google/policies
 - **`~.` is not an exclusive claim** if another link is also a default DNS route. systemd routes a query to every link whose routing domain matches ([resolved discussion](https://github.com/systemd/systemd/issues/9472)). This app sets the primary link only.
 - **`ctrld` is not used.** Control D's command-line daemon is the vendor's supported Linux client. This program talks to systemd-resolved directly so profiles can change without that daemon.
 - A link owned by systemd-networkd can return `org.freedesktop.resolve1.LinkBusy`. The error is shown; DNS is left unchanged.
-- The Chrome helper has to be root-owned and not group/world-writable, which is true after the package install. Running the binary out of a build directory can switch DNS, but the Chrome option reports that `pkexec` would refuse the helper.
+- The Chrome helper has to be root-owned and not group/world-writable, which is true after the package install or **Install helper**. Running the binary out of a build directory can switch DNS, but the Chrome option reports that `pkexec` would refuse the helper. An AppImage does not install the helper until you confirm that action. The polkit dialog names `python3` because that is the root-owned program that copies the listed files.
+- **Install helper needs `/usr/bin/python3`**, which Ubuntu provides. The helper binary from the AppImage is linked against the Qt libraries shipped beside it, so those libraries are part of the install list. zlib (`libz.so.1`) and `libcom_err.so.2` are the host libraries that copy leaves in place. The `.deb` helper uses the system's Qt instead and does not need `/usr/lib/controld-tray`.
 - There is no separate "applying" icon. The icon changes when the D-Bus calls and the verification lookup have finished.

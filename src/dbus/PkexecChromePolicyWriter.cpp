@@ -1,10 +1,13 @@
 #include "dbus/PkexecChromePolicyWriter.hpp"
 
+#include "core/AppImageLaunch.hpp"
+#include "core/HelperInstall.hpp"
 #include "core/Validation.hpp"
 
 #include <QCoreApplication>
 #include <QFileInfo>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QStandardPaths>
 
 namespace controld {
@@ -28,6 +31,13 @@ QString pkexecFailure(int code, const QString& helperError) {
 } // namespace
 
 QString defaultChromeHelperPath() {
+    if (appImageLaunch(QProcessEnvironment::systemEnvironment()).active) {
+#ifdef CONTROLD_TRAY_HELPER_PATH
+        return QStringLiteral(CONTROLD_TRAY_HELPER_PATH);
+#else
+        return helperDestination();
+#endif
+    }
     const QString beside =
         QCoreApplication::applicationDirPath() + QStringLiteral("/controld-tray-chrome-policy");
     if (QFileInfo::exists(beside)) {
@@ -71,9 +81,13 @@ CallResult PkexecChromePolicyWriter::clear() {
 
 CallResult PkexecChromePolicyWriter::validateHelper() const {
     const QFileInfo helper(m_helperPath);
-    if (!helper.exists() || !helper.isFile()) {
+    if (helper.isSymLink() || !helper.exists() || !helper.isFile()) {
         return CallResult::failure(
-            {}, QStringLiteral("The Chrome policy helper is not installed: %1").arg(m_helperPath));
+            {},
+            QStringLiteral("The Chrome policy helper is not installed at %1. DNS profile switching "
+                           "does not need it. From the AppImage, use Install helper. A Debian "
+                           "package install puts the helper there for you.")
+                .arg(m_helperPath));
     }
     const QFileDevice::Permissions permissions = helper.permissions();
     if (helper.ownerId() != 0 ||

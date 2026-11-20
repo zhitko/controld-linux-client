@@ -4,4 +4,9 @@ CMakeUserPresets.json
 compile_commands.json
 .cache/
 *.user
+__pycache__/
 *.deb
+*.AppImage
+AppDir/
+build-appimage/
+.appimage-tools/

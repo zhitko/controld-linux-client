@@ -1,7 +1,12 @@
 #include "ui/SettingsWindow.hpp"
 
+#include "core/AppImageLaunch.hpp"
 #include "core/AutostartManager.hpp"
+#include "core/HelperInstall.hpp"
+#include "ui/HelperInstallDialog.hpp"
 #include "ui/ProfileEditorDialog.hpp"
+
+#include <QProcessEnvironment>
 
 #include <QCheckBox>
 #include <QCoreApplication>
@@ -50,6 +55,13 @@ SettingsWindow::SettingsWindow(ProfileController& controller, QWidget* parent)
         this);
     chromeNote->setWordWrap(true);
 
+    m_helperNote = new QLabel(this);
+    m_helperNote->setWordWrap(true);
+    m_installHelper = new QPushButton(QStringLiteral("Install helper"), this);
+    m_uninstallHelper = new QPushButton(QStringLiteral("Uninstall helper"), this);
+    connect(m_installHelper, &QPushButton::clicked, this, &SettingsWindow::installHelper);
+    connect(m_uninstallHelper, &QPushButton::clicked, this, &SettingsWindow::uninstallHelper);
+
     m_autostart = new QCheckBox(QStringLiteral("Start ControlD Tray when I log in"), this);
     m_autostart->setChecked(AutostartManager::isEnabled());
 
@@ -62,9 +74,23 @@ SettingsWindow::SettingsWindow(ProfileController& controller, QWidget* parent)
         showResult(result);
     });
     connect(m_autostart, &QCheckBox::toggled, this, [this](bool checked) {
+        const QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+        const AppImageLaunch launch = appImageLaunch(environment);
+        const QString executable =
+            autostartExecutable(environment, QCoreApplication::applicationFilePath());
         QString error;
-        const bool ok =
-            AutostartManager::setEnabled(checked, QCoreApplication::applicationFilePath(), &error);
+        if (checked && launch.active) {
+            const QString png =
+                launch.appDir +
+                QStringLiteral("/usr/share/icons/hicolor/256x256/apps/controld-tray.png");
+            QString iconError;
+            if (!AutostartManager::installIcon(png, &iconError)) {
+                QMessageBox::warning(
+                    this, QStringLiteral("Autostart"),
+                    QStringLiteral("The login entry will still be written. %1").arg(iconError));
+            }
+        }
+        const bool ok = AutostartManager::setEnabled(checked, executable, &error);
         if (!ok) {
             const QSignalBlocker blocker(m_autostart);
             m_autostart->setChecked(AutostartManager::isEnabled());
@@ -81,6 +107,9 @@ SettingsWindow::SettingsWindow(ProfileController& controller, QWidget* parent)
     layout->addLayout(buttons);
     layout->addWidget(m_chrome);
     layout->addWidget(chromeNote);
+    layout->addWidget(m_helperNote);
+    layout->addWidget(m_installHelper);
+    layout->addWidget(m_uninstallHelper);
     layout->addWidget(m_autostart);
     layout->addWidget(closeButtons);
     resize(520, 420);
@@ -90,6 +119,31 @@ SettingsWindow::SettingsWindow(ProfileController& controller, QWidget* parent)
             &SettingsWindow::reloadProfiles);
     reloadProfiles();
     refreshStatus();
+    refreshHelperSection();
+}
+
+void SettingsWindow::refreshHelperSection() {
+    const bool appImage = appImageLaunch(QProcessEnvironment::systemEnvironment()).active;
+    m_helperNote->setVisible(appImage);
+    if (!appImage) {
+        m_installHelper->setVisible(false);
+        m_uninstallHelper->setVisible(false);
+        return;
+    }
+    const SystemHelperStatus status = inspectSystemHelper({}, true);
+    m_helperNote->setText(appImageHelperNote(status));
+    m_installHelper->setVisible(!status.ready);
+    m_uninstallHelper->setVisible(status.managedByApp);
+}
+
+void SettingsWindow::installHelper() {
+    runHelperInstall(this);
+    refreshHelperSection();
+}
+
+void SettingsWindow::uninstallHelper() {
+    runHelperUninstall(this, m_controller);
+    refreshHelperSection();
 }
 
 void SettingsWindow::reloadProfiles() {

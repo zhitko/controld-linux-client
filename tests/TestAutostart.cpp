@@ -32,8 +32,25 @@ void TestAutostart::writesMarkedDesktopFileAndRefusesForeignFiles() {
     const QString text = QString::fromUtf8(file.readAll());
     file.close();
     QVERIFY(text.contains(QStringLiteral("Exec=/usr/bin/controld-tray")));
+    QVERIFY(text.contains(QStringLiteral("Icon=controld-tray")));
     QVERIFY(text.contains(QStringLiteral("X-ControlD-Tray-Autostart=true")));
     QVERIFY(text.contains(QStringLiteral("X-GNOME-Autostart-enabled=true")));
+
+    QVERIFY(controld::AutostartManager::setEnabled(
+        true, QStringLiteral("/home/me/ControlD Tray.AppImage"), &error));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const QString quoted = QString::fromUtf8(file.readAll());
+    file.close();
+    QVERIFY(quoted.contains(QStringLiteral("Exec=\"/home/me/ControlD Tray.AppImage\"")));
+
+    QFile iconSource(QDir::temp().filePath(QStringLiteral("controld-tray-icon.png")));
+    QVERIFY(iconSource.open(QIODevice::WriteOnly));
+    iconSource.write("png");
+    iconSource.close();
+    QVERIFY(controld::AutostartManager::installIcon(iconSource.fileName(), &error));
+    QFile installedIcon(controld::AutostartManager::iconInstallPath());
+    QVERIFY(installedIcon.open(QIODevice::ReadOnly));
+    QCOMPARE(installedIcon.readAll(), QByteArray("png"));
 
     QVERIFY(controld::AutostartManager::setEnabled(false, QStringLiteral("/usr/bin/controld-tray"),
                                                    &error));

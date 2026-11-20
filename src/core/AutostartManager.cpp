@@ -41,6 +41,43 @@ QString AutostartManager::filePath() {
     return base + QStringLiteral("/autostart/controld-tray.desktop");
 }
 
+QString AutostartManager::iconInstallPath() {
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    return base + QStringLiteral("/icons/hicolor/256x256/apps/controld-tray.png");
+}
+
+bool AutostartManager::installIcon(const QString& pngPath, QString* error) {
+    QFile source(pngPath);
+    if (!source.open(QIODevice::ReadOnly)) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Could not read the tray icon: %1").arg(pngPath);
+        }
+        return false;
+    }
+    const QByteArray bytes = source.readAll();
+    source.close();
+    if (bytes.isEmpty()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("The tray icon is empty: %1").arg(pngPath);
+        }
+        return false;
+    }
+    const QString destination = iconInstallPath();
+    QDir().mkpath(QFileInfo(destination).dir().absolutePath());
+    QSaveFile file(destination);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+        file.write(bytes) != bytes.size() || !file.commit()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("Could not write %1.").arg(destination);
+        }
+        return false;
+    }
+    if (error != nullptr) {
+        error->clear();
+    }
+    return true;
+}
+
 bool AutostartManager::isEnabled() {
     const QString path = filePath();
     if (!QFile::exists(path)) {
@@ -50,7 +87,8 @@ bool AutostartManager::isEnabled() {
     return text.contains(kMarker) && !text.contains(QStringLiteral("Hidden=true"));
 }
 
-bool AutostartManager::setEnabled(bool enabled, const QString& executable, QString* error) {
+bool AutostartManager::setEnabled(bool enabled, const QString& executable, QString* error,
+                                  const QString& iconName) {
     const QString path = filePath();
     if (!enabled) {
         if (!QFile::exists(path)) {
@@ -83,9 +121,12 @@ bool AutostartManager::setEnabled(bool enabled, const QString& executable, QStri
         return true;
     }
 
-    if (executable.isEmpty()) {
+    if (executable.isEmpty() || executable.contains(QLatin1Char('\n')) ||
+        executable.contains(QLatin1Char('\r')) || iconName.isEmpty() ||
+        iconName.contains(QLatin1Char('\n')) || iconName.contains(QLatin1Char('\r'))) {
         if (error != nullptr) {
-            *error = QStringLiteral("The application path is empty.");
+            *error =
+                QStringLiteral("The autostart executable or icon is empty or contains a newline.");
         }
         return false;
     }
@@ -109,12 +150,12 @@ bool AutostartManager::setEnabled(bool enabled, const QString& executable, QStri
                                            "Name=ControlD Tray\n"
                                            "Comment=Switch ControlD DNS profiles\n"
                                            "Exec=%1\n"
-                                           "Icon=controld-tray\n"
+                                           "Icon=%2\n"
                                            "Terminal=false\n"
                                            "Categories=Network;\n"
                                            "X-GNOME-Autostart-enabled=true\n"
-                                           "%2\n")
-                                .arg(quoteExec(executable), kMarker);
+                                           "%3\n")
+                                .arg(quoteExec(executable), iconName, kMarker);
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         if (error != nullptr) {

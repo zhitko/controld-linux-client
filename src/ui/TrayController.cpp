@@ -1,8 +1,13 @@
 #include "ui/TrayController.hpp"
 
+#include "core/AppImageLaunch.hpp"
 #include "core/ChromeProcesses.hpp"
+#include "core/HelperInstall.hpp"
+#include "ui/HelperInstallDialog.hpp"
 #include "ui/SettingsWindow.hpp"
 #include "ui/StatusIcon.hpp"
+
+#include <QProcessEnvironment>
 
 #include <QAction>
 #include <QActionGroup>
@@ -85,6 +90,17 @@ void TrayController::rebuildMenu() {
     });
     connect(m_menu->addAction(QStringLiteral("Restart Chrome")), &QAction::triggered, this,
             &TrayController::restartChrome);
+    if (appImageLaunch(QProcessEnvironment::systemEnvironment()).active) {
+        const SystemHelperStatus status = inspectSystemHelper({}, true);
+        if (!status.ready) {
+            connect(m_menu->addAction(QStringLiteral("Install helper")), &QAction::triggered, this,
+                    [this]() { runHelperInstall(&m_settings); });
+        }
+        if (status.managedByApp) {
+            connect(m_menu->addAction(QStringLiteral("Uninstall helper")), &QAction::triggered,
+                    this, [this]() { runHelperUninstall(&m_settings, m_controller); });
+        }
+    }
     m_menu->addSeparator();
     connect(m_menu->addAction(QStringLiteral("Quit")), &QAction::triggered, qApp,
             &QApplication::quit);

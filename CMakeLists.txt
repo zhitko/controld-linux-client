@@ -31,6 +31,8 @@ set(CONTROLD_CORE_SOURCES
     src/core/ProfileController.cpp
     src/core/AutostartManager.cpp
     src/core/ChromeProcesses.cpp
+    src/core/AppImageLaunch.cpp
+    src/core/HelperInstall.cpp
 )
 
 add_library(controld-core STATIC ${CONTROLD_CORE_SOURCES})
@@ -56,6 +58,7 @@ add_executable(controld-tray
     src/ui/ProfileEditorDialog.cpp
     src/ui/SettingsWindow.cpp
     src/ui/TrayController.cpp
+    src/ui/HelperInstallDialog.cpp
 )
 target_link_libraries(controld-tray PRIVATE controld-dbus Qt6::Widgets Qt6::Gui)
 controld_strict(controld-tray)
@@ -63,6 +66,17 @@ controld_strict(controld-tray)
 add_executable(controld-tray-chrome-policy src/chrome_policy_helper_main.cpp)
 target_link_libraries(controld-tray-chrome-policy PRIVATE controld-core)
 controld_strict(controld-tray-chrome-policy)
+
+option(CONTROLD_HELPER_PRIVATE_RPATH "Point the Chrome helper at /usr/lib/controld-tray" OFF)
+if(CONTROLD_HELPER_PRIVATE_RPATH)
+    set_target_properties(controld-tray-chrome-policy PROPERTIES
+        INSTALL_RPATH "\$ORIGIN/../lib/controld-tray"
+        BUILD_WITH_INSTALL_RPATH ON)
+endif()
+
+add_executable(controld-check-helper src/check_helper_main.cpp)
+target_link_libraries(controld-check-helper PRIVATE controld-core)
+controld_strict(controld-check-helper)
 
 if(BUILD_TESTING)
     function(controld_test name source)
@@ -80,6 +94,9 @@ if(BUILD_TESTING)
     controld_test(test-marshalling tests/TestMarshalling.cpp)
     controld_test(test-autostart tests/TestAutostart.cpp)
     controld_test(test-chrome-processes tests/TestChromeProcesses.cpp)
+    controld_test(test-helper-install tests/TestHelperInstall.cpp)
+    target_compile_definitions(test-helper-install PRIVATE
+        CONTROLD_INSTALL_SCRIPT="${CMAKE_SOURCE_DIR}/packaging/install_system_files.py")
 endif()
 
 configure_file(
@@ -96,6 +113,10 @@ install(FILES packaging/controld-tray.desktop
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications)
 install(FILES packaging/controld-tray.svg
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps)
+install(FILES packaging/controld-tray.png
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/256x256/apps)
+install(FILES packaging/install_system_files.py
+        DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/controld-tray)
 install(FILES README.md LICENSE DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
 set(CPACK_PACKAGE_NAME "controld-tray")
