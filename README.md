@@ -6,10 +6,10 @@ The app runs as your user. Changing a link's DNS asks systemd-resolved over D-Bu
 
 ## What it does
 
-- Tray menu of saved profiles (display name + Control D resolver ID). The selected profile is checked.
+- Tray menu of saved profiles (display name + Control D resolver ID). The selected profile is checked. Left click and right click both open that menu. A click does not open Settings by itself; Settings is an item in the menu.
 - **Disable (restore default DNS)** calls resolved's `RevertLink` on links this app has configured.
 - **Flush DNS cache** calls resolved's `FlushCaches`, then looks up Control D's verification name again when a profile is selected.
-- **Settings** adds, edits, and removes profiles. Profiles are stored with `QSettings`.
+- **Settings** adds, edits, and removes profiles, and can activate the selected profile or restore default DNS. That keeps the app usable when a tray host cannot show a menu. Profiles are stored with `QSettings`.
 - **Restart Chrome** asks confirmed browser processes to quit. Chrome's hostname cache cannot be cleared from outside the process.
 - **Quit** leaves the current DNS settings in place.
 - The tray icon and tooltip follow the last real result: active (the verification lookup matched), failed (a D-Bus call or the lookup failed), or off. A failed switch is not shown as active.

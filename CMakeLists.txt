@@ -52,15 +52,19 @@ target_link_libraries(controld-dbus PUBLIC controld-core Qt6::DBus)
 target_compile_definitions(controld-dbus PRIVATE CONTROLD_TRAY_HELPER_PATH="${CONTROLD_HELPER_PATH}")
 controld_strict(controld-dbus)
 
-add_executable(controld-tray
-    src/main.cpp
+add_library(controld-ui STATIC
     src/ui/StatusIcon.cpp
     src/ui/ProfileEditorDialog.cpp
     src/ui/SettingsWindow.cpp
     src/ui/TrayController.cpp
     src/ui/HelperInstallDialog.cpp
 )
-target_link_libraries(controld-tray PRIVATE controld-dbus Qt6::Widgets Qt6::Gui)
+target_link_libraries(controld-ui PUBLIC controld-dbus Qt6::Widgets Qt6::Gui)
+target_include_directories(controld-ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+controld_strict(controld-ui)
+
+add_executable(controld-tray src/main.cpp)
+target_link_libraries(controld-tray PRIVATE controld-ui)
 target_compile_definitions(controld-tray PRIVATE CONTROLD_VERSION="${PROJECT_VERSION}")
 controld_strict(controld-tray)
 
@@ -96,6 +100,8 @@ if(BUILD_TESTING)
     controld_test(test-autostart tests/TestAutostart.cpp)
     controld_test(test-chrome-processes tests/TestChromeProcesses.cpp)
     controld_test(test-helper-install tests/TestHelperInstall.cpp)
+    controld_test(test-tray-menu tests/TestTrayMenu.cpp)
+    target_link_libraries(test-tray-menu PRIVATE controld-ui)
     target_compile_definitions(test-helper-install PRIVATE
         CONTROLD_INSTALL_SCRIPT="${CMAKE_SOURCE_DIR}/packaging/install_system_files.py")
 endif()

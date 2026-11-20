@@ -94,7 +94,8 @@ int main(int argc, char* argv[]) {
         settings.show();
         QMessageBox::information(
             &settings, QStringLiteral("ControlD Tray"),
-            QStringLiteral("No system tray is available. Use this window to manage profiles."));
+            QStringLiteral("No system tray is available. Use this window to choose a profile or "
+                           "restore default DNS."));
     }
 
     return QApplication::exec();

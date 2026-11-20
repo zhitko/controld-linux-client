@@ -23,6 +23,8 @@ class SettingsWindow : public QDialog {
     void addProfile();
     void editProfile();
     void removeProfile();
+    void activateSelected();
+    void disableDns();
     void refreshHelperSection();
     void installHelper();
     void uninstallHelper();

@@ -4,6 +4,7 @@
 
 #include <QObject>
 #include <QSystemTrayIcon>
+#include <QWidget>
 
 class QMenu;
 
@@ -19,6 +20,9 @@ class TrayController : public QObject {
                    QObject* parent = nullptr);
 
     void notify(const QString& title, const QString& body);
+    QMenu* contextMenu() const;
+    bool menuPreparedBeforeShow() const;
+    void handleActivation(QSystemTrayIcon::ActivationReason reason);
 
   private slots:
     void rebuildMenu();
@@ -29,10 +33,14 @@ class TrayController : public QObject {
     void restartChrome();
 
   private:
+    void showSettings();
+
     ProfileController& m_controller;
     SettingsWindow& m_settings;
+    QWidget m_menuOwner;
     QSystemTrayIcon m_tray;
     QMenu* m_menu = nullptr;
+    bool m_menuPreparedBeforeShow = false;
 };
 
 } // namespace controld

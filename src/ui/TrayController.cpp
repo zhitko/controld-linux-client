@@ -12,6 +12,7 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QCursor>
 #include <QElapsedTimer>
 #include <QMenu>
 #include <QMessageBox>
@@ -23,24 +24,53 @@ namespace controld {
 
 TrayController::TrayController(ProfileController& controller, SettingsWindow& settings,
                                QObject* parent)
-    : QObject(parent), m_controller(controller), m_settings(settings), m_menu(new QMenu) {
-    m_tray.setContextMenu(m_menu);
+    : QObject(parent), m_controller(controller), m_settings(settings),
+      m_menu(new QMenu(&m_menuOwner)) {
+    m_menuOwner.hide();
     m_tray.setIcon(StatusIcon::create(RuntimeStatus::Disabled));
-    connect(&m_tray, &QSystemTrayIcon::activated, this,
-            [this](QSystemTrayIcon::ActivationReason reason) {
-                if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick) {
-                    m_settings.show();
-                    m_settings.raise();
-                    m_settings.activateWindow();
-                }
-            });
-    connect(m_menu, &QMenu::aboutToShow, this, &TrayController::rebuildMenu);
+    connect(&m_controller, &ProfileController::profilesChanged, this, &TrayController::rebuildMenu);
+    connect(&m_controller, &ProfileController::statusChanged, this, &TrayController::rebuildMenu);
     connect(&m_controller, &ProfileController::statusChanged, this,
             &TrayController::updateAppearance);
+    connect(&m_tray, &QSystemTrayIcon::activated, this, &TrayController::handleActivation);
+
+    // Fill the menu before setContextMenu() and show(). Ubuntu's AppIndicator
+    // exports it through com.canonical.dbusmenu and refuses to open a menu
+    // that was empty at registration. Qt's AboutToShow reply always says the
+    // layout is unchanged, so rebuilding from aboutToShow never reaches the
+    // shell. Later profile changes rebuild this same menu object.
+    rebuildMenu();
+    m_tray.setContextMenu(m_menu);
+    m_menuPreparedBeforeShow = m_tray.contextMenu() == m_menu && !m_menu->actions().isEmpty();
     if (QSystemTrayIcon::isSystemTrayAvailable()) {
         m_tray.show();
     }
     updateAppearance();
+}
+
+QMenu* TrayController::contextMenu() const {
+    return m_tray.contextMenu();
+}
+
+bool TrayController::menuPreparedBeforeShow() const {
+    return m_menuPreparedBeforeShow;
+}
+
+void TrayController::handleActivation(QSystemTrayIcon::ActivationReason reason) {
+    // Left click arrives as Trigger on GNOME AppIndicator. Open the menu.
+    // Context is the host's own right-click path; handling it here would
+    // replace the menu the shell is already opening.
+    if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick) {
+        const QRect geometry = m_tray.geometry();
+        const QPoint position = geometry.isValid() ? geometry.center() : QCursor::pos();
+        m_menu->popup(position);
+    }
+}
+
+void TrayController::showSettings() {
+    m_settings.show();
+    m_settings.raise();
+    m_settings.activateWindow();
 }
 
 void TrayController::notify(const QString& title, const QString& body) {
@@ -55,6 +85,10 @@ void TrayController::notify(const QString& title, const QString& body) {
 }
 
 void TrayController::rebuildMenu() {
+    const auto groups = m_menu->findChildren<QActionGroup*>(QString(), Qt::FindDirectChildrenOnly);
+    for (QActionGroup* group : groups) {
+        delete group;
+    }
     m_menu->clear();
     auto* status = m_menu->addAction(m_controller.statusLine());
     status->setEnabled(false);
@@ -83,11 +117,8 @@ void TrayController::rebuildMenu() {
     m_menu->addSeparator();
     connect(m_menu->addAction(QStringLiteral("Flush DNS cache")), &QAction::triggered, this,
             &TrayController::flush);
-    connect(m_menu->addAction(QStringLiteral("Settings")), &QAction::triggered, this, [this]() {
-        m_settings.show();
-        m_settings.raise();
-        m_settings.activateWindow();
-    });
+    connect(m_menu->addAction(QStringLiteral("Settings")), &QAction::triggered, this,
+            &TrayController::showSettings);
     connect(m_menu->addAction(QStringLiteral("Restart Chrome")), &QAction::triggered, this,
             &TrayController::restartChrome);
     if (appImageLaunch(QProcessEnvironment::systemEnvironment()).active) {
