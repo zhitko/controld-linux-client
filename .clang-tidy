@@ -1,0 +1,10 @@
+Checks: >
+  -*,
+  bugprone-use-after-move,
+  bugprone-redundant-branch-condition,
+  modernize-use-nullptr,
+  modernize-use-override,
+  performance-unnecessary-copy-initialization
+WarningsAsErrors: '*'
+HeaderFilterRegex: '(src|tests)/'
+FormatStyle: none

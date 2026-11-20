@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ControlD Tray
+GenericName=DNS profile switcher
+Comment=Switch ControlD resolver profiles from the system tray
+Exec=controld-tray
+Icon=controld-tray
+Terminal=false
+Categories=Network;
+Keywords=DNS;ControlD;DoT;
+StartupNotify=false
