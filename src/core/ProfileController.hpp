@@ -51,6 +51,9 @@ class ProfileController : public QObject {
     OperationResult finish(bool ok, RuntimeStatus status, const QString& detail, bool announce,
                            bool mentionChromeCache, bool policyChanged);
     QString activeInterfaceLabel() const;
+    CallResult applyChromePolicy(const QString& resolverId);
+    CallResult clearChromePolicy();
+    OperationResult persistenceFailure(const QString& error, bool announce = true);
 
     ProfileStore& m_store;
     IResolvedBackend& m_resolved;
@@ -58,6 +61,8 @@ class ProfileController : public QObject {
     IChromePolicyWriter& m_chrome;
     RuntimeStatus m_status = RuntimeStatus::Disabled;
     QString m_detail;
+    QString m_appliedProfileId;
+    QString m_appliedResolverId;
     bool m_applying = false;
     QueuedOperation m_queued = QueuedOperation::None;
 };

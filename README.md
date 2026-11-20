@@ -2,7 +2,7 @@
 
 Unofficial tray client for [Control D](https://controld.com). It switches premium resolver profiles on an Ubuntu laptop that uses NetworkManager and systemd-resolved, without editing config files by hand and without a root daemon.
 
-The app runs as your user. Changing a link's DNS asks systemd-resolved over D-Bus, and polkit shows the normal admin prompt for resolved's existing actions. An optional Chrome/Chromium Secure DNS policy is the only extra privileged step, and it goes through a small `pkexec` helper.
+The app runs as your user. Changing a link's DNS asks systemd-resolved over D-Bus. When the included polkit policy is installed, the app requests one temporary administrator authorization covering its DNS changes. An optional Chrome/Chromium Secure DNS policy goes through a small `pkexec` helper and can require a separate prompt.
 
 ## What it does
 
@@ -30,7 +30,7 @@ The package installs:
 
 - `/usr/bin/controld-tray`
 - `/usr/libexec/controld-tray-chrome-policy` (or the configured `libexec` directory)
-- a Polkit action `com.vzhitko.controldtray.chrome-policy`
+- Polkit actions `com.vzhitko.controldtray.configure-dns` and `com.vzhitko.controldtray.chrome-policy`
 - `controld-tray.desktop` and a scalable icon
 
 Launch **ControlD Tray** from the application menu. In Settings, **Start ControlD Tray when I log in** writes `~/.config/autostart/controld-tray.desktop`. That file is marked `X-ControlD-Tray-Autostart=true`, and the checkbox will not delete an autostart file it did not create.
@@ -52,29 +52,31 @@ DNS switching does not install anything. It uses systemd-resolved's own polkit a
 - `/usr/lib/controld-tray/` (the helper's private libraries, plus a manifest of their hashes). zlib and libcom-err stay on the system; they are part of the Ubuntu base and linuxdeploy does not bundle them. OpenSSL is not taken from the host.
 - `/usr/share/polkit-1/actions/com.vzhitko.controldtray.policy`
 
-**Uninstall helper** removes a file only when its contents still match that manifest, so a later `.deb` install of the same paths is left in place. If this AppImage wrote a managed Chrome policy, uninstall removes that policy first. DNS settings are not changed. If a helper is already installed and there is no AppImage manifest, the AppImage uses it and does not offer to replace it.
+**Uninstall helper** checks Debian package ownership as well as the manifest hashes, preserving a later `.deb` installation even when its policy file is byte-identical. If an unknown replacement changed the helper, its policy and private libraries are also preserved. If this AppImage wrote a managed Chrome policy, uninstall removes that policy first. DNS settings are not changed. If a helper is already installed and there is no AppImage manifest, the AppImage uses it and does not offer to replace it. Installation validates all staged files before writing, rolls back write failures, and records a recovery manifest before copying files. An interrupted or damaged managed installation retains Install and Uninstall options.
 
 **Start ControlD Tray when I log in** writes the autostart entry's `Exec` to the AppImage file itself (not the temporary mount path) and copies the icon to `~/.local/share/icons/hicolor/256x256/apps/controld-tray.png`. Move the AppImage and turn the checkbox off and on again so the path is updated. Building the image locally uses `packaging/build-appimage.sh` with `QT_ROOT` pointing at a Qt 6.4 `gcc_64` prefix.
 
-The first profile switch prompts for administrator authentication. systemd-resolved caches that grant briefly (`auth_admin_keep`).
+The first profile switch prompts for administrator authentication. The installed `configure-dns` action groups setting DNS servers, DNS-over-TLS, routing domains, default routing, and reverting the link under one temporary grant (`auth_admin_keep`). Polkit decides its lifetime and may prompt again after expiry, revocation, or a new session. This does not store your password or enable permanent passwordless access. Local administrator rules can override these defaults. Chrome pinning remains a separate privileged action.
+
+To enable the reduced prompts, install the updated Debian package, or use **Install helper** / **Update helper** from the updated AppImage. Updating just the executable does not update the system authorization policy. With no grouped policy installed, DNS switching still works through resolved's separate prompts. An older helper owned by a Debian package must be updated through the package manager.
 
 ## Build
 
 ```bash
 sudo apt install build-essential cmake ninja-build pkg-config \
     qt6-base-dev qt6-base-dev-tools libgl1-mesa-dev \
-    clang-format clang-tidy dpkg-dev
+    clang-format clang-tidy dpkg-dev dbus python3
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build --output-on-failure
 cpack -G DEB --config build/CPackConfig.cmake
 ```
 
-The build uses `-Wall -Wextra -Wpedantic -Werror`. Tests do not need a desktop session. CI builds, tests, and packages the `.deb` on an Ubuntu 24.04 runner using only the distro Qt, then installs that package in a clean Ubuntu 24.04 container and runs `controld-tray --version`. The AppImage is built in an Ubuntu 20.04 container for older glibc.
+The build uses `-Wall -Wextra -Wpedantic -Werror`. Tests do not need a desktop session; use `QT_QPA_PLATFORM=offscreen` when running the UI tests headlessly. The NetworkManager integration test uses a private `dbus-run-session`, and installer recovery tests use temporary directories. CI builds, tests, and packages the `.deb` on an Ubuntu 24.04 runner using only the distro Qt, then installs that package in a clean Ubuntu 24.04 container and runs `controld-tray --version`. The AppImage is built in an Ubuntu 20.04 container for older glibc.
 
 ## How it works
 
-Profiles live in `~/.config/vzhitko/controld-tray/settings.ini` (mode `0600`).
+Profiles live in `~/.config/vzhitko/controld-tray/settings.ini` (mode `0600`). Settings are saved atomically, and save failures are reported. Cleanup intent is saved before changing system DNS or Chrome policies so a partial operation remains retryable after restarting the app. A cache flush cannot mark a selected profile active unless that profile was successfully applied in the current session.
 
 Activating a profile on the NetworkManager primary connection:
 
@@ -94,9 +96,9 @@ Addresses and hostnames, from Control D's docs:
 - [Device clients](https://docs.controld.com/docs/device-clients): DoH URL `https://dns.controld.com/<resolver-id>` and DoT hostname `<resolver-id>.dns.controld.com`.
 - [Check if DNS is working](https://docs.controld.com/docs/check-if-dns-is-working): `verify.controld.com` is a CNAME for `api.controld.com` and does not resolve on other providers. The documented example address (`147.185.34.1`) is not treated as the only acceptable answer.
 
-D-Bus calls set interactive authorization so the session polkit agent can prompt. The actions are the ones shipped with systemd-resolved, including `org.freedesktop.resolve1.set-dns-servers`, `set-domains`, `set-default-route`, `set-dns-over-tls`, and `revert` ([resolved D-Bus API](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.resolve1.html), [policy in systemd 255](https://github.com/systemd/systemd/blob/v255/src/resolve/org.freedesktop.resolve1.policy)). Ubuntu 24.04's systemd 255 does not list a separate `flush-caches` action; the method is still called and a denial is shown as a failure.
+D-Bus calls set interactive authorization so the session polkit agent can prompt. Before a DNS mutation, the app checks its own system-bus-name subject with polkit using empty details. The installed `configure-dns` action uses `org.freedesktop.policykit.imply` to cover resolved's `org.freedesktop.resolve1.set-dns-servers`, `set-domains`, `set-default-route`, `set-dns-over-tls`, and `revert` actions ([polkit meta actions](https://www.freedesktop.org/software/polkit/docs/latest/polkit.8.html), [resolved D-Bus API](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.resolve1.html)). Authorization denial stops the mutation, and the app does not cache authorization itself. Ubuntu 24.04's systemd 255 does not list a separate `flush-caches` action; the method is still called and a denial is shown as a failure.
 
-NetworkManager's `PrimaryConnection` property and the primary connection's `StateChanged` signal are watched. A new primary link is configured and the previous link this app touched is reverted (`NoSuchLink` is ignored because the interface is already gone). A connection reaching the activated state reapplies the selected profile, because NetworkManager writes its own DNS at that point. Quitting the tray does not revert DNS. On the next start, the saved profile is applied again.
+NetworkManager's `PrimaryConnection` property and the primary connection's `StateChanged` signal are watched. A new primary link is configured and the previous link this app touched is reverted (`NoSuchLink` is ignored because the interface is already gone). A connection reaching the activated state, or a replacement connection on the same interface, reapplies the selected profile because NetworkManager writes its own DNS at that point. Quitting the tray does not revert DNS. On the next start, the saved profile is applied again.
 
 `~.` is sent as domain `.` with routing-only true because that is what `resolvectl domain <iface> '~.'` puts on the bus (the `~` is the routing flag, and the name is the root).
 

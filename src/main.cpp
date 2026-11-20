@@ -90,8 +90,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (!QSystemTrayIcon::isSystemTrayAvailable()) {
-        settings.setAttribute(Qt::WA_QuitOnClose, true);
-        settings.show();
+        settings.showWithoutTray();
         QMessageBox::information(
             &settings, QStringLiteral("ControlD Tray"),
             QStringLiteral("No system tray is available. Use this window to choose a profile or "

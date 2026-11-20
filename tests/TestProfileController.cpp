@@ -1,8 +1,11 @@
 #include "Mocks.hpp"
+#include "core/ChromePolicyHelper.hpp"
 #include "core/ControlD.hpp"
 #include "core/ProfileController.hpp"
 #include "core/Verification.hpp"
 
+#include <QDir>
+#include <QFile>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -19,6 +22,11 @@ class TestProfileController : public QObject {
     void chromePolicyIsPinnedOnceAndClearedOnDisable();
     void chromeWriteFailureDoesNotHideVerifiedDns();
     void flushRecheckUsesTheLiveAnswer();
+    void flushCannotPromoteAFailedSwitch();
+    void partialChromeApplyIsCleanedAfterRestart();
+    void persistenceFailureStopsSystemChanges();
+    void activationOnSameInterfaceReapplies();
+    void failedBookkeepingPreservesChromeCleanupIntent();
 };
 
 struct Fixture {
@@ -209,6 +217,130 @@ void TestProfileController::flushRecheckUsesTheLiveAnswer() {
     QCOMPARE(fixture.controller.status(), controld::RuntimeStatus::Failed);
     QVERIFY(flushed.notification.contains(QStringLiteral("timed out")));
     QVERIFY(flushed.notification.contains(QStringLiteral("cannot flush")));
+}
+
+void TestProfileController::flushCannotPromoteAFailedSwitch() {
+    Fixture fixture;
+    const QString a = fixture.add(QStringLiteral("A"), QStringLiteral("aaaa"));
+    const QString b = fixture.add(QStringLiteral("B"), QStringLiteral("bbbb"));
+    QVERIFY(fixture.controller.activateProfile(a).ok);
+    fixture.resolved.failures.insert(QStringLiteral("setLinkDnsEx"),
+                                     controld::CallResult::failure({}, QStringLiteral("denied")));
+    QVERIFY(!fixture.controller.activateProfile(b).ok);
+    fixture.resolved.calls.clear();
+    QVERIFY(!fixture.controller.flush().ok);
+    QCOMPARE(fixture.controller.status(), controld::RuntimeStatus::Failed);
+    QCOMPARE(fixture.resolved.calls.size(), 1);
+    QVERIFY(fixture.controller.activateProfile(b).ok);
+    QVERIFY(fixture.controller.flush().ok);
+}
+
+void TestProfileController::partialChromeApplyIsCleanedAfterRestart() {
+    class DiskChrome final : public controld::IChromePolicyWriter {
+      public:
+        QStringList paths;
+        int clears = 0;
+        controld::CallResult apply(const QString& id) override {
+            const auto result =
+                controld::runChromePolicyHelper({QStringLiteral("apply"), id}, paths);
+            return result.code == 0 ? controld::CallResult::success()
+                                    : controld::CallResult::failure({}, result.error);
+        }
+        controld::CallResult clear() override {
+            ++clears;
+            const auto result = controld::runChromePolicyHelper({QStringLiteral("clear")}, paths);
+            return result.code == 0 ? controld::CallResult::success()
+                                    : controld::CallResult::failure({}, result.error);
+        }
+    } chrome;
+    QTemporaryDir dir;
+    const QString path = dir.filePath(QStringLiteral("settings.ini"));
+    const QString first = dir.filePath(QStringLiteral("chrome/controld.json"));
+    const QString second = dir.filePath(QStringLiteral("chromium/controld.json"));
+    QVERIFY(QDir().mkpath(second));
+    chrome.paths = {first, second};
+    controld::MockResolved resolved;
+    controld::MockLink link;
+    {
+        controld::ProfileStore store(path);
+        controld::ProfileController controller(store, resolved, link, chrome);
+        const QString id =
+            controller.addProfile(QStringLiteral("Home"), QStringLiteral("aaaa"), nullptr);
+        QVERIFY(controller.setChromePolicyEnabled(true).ok);
+        QVERIFY(!controller.activateProfile(id).ok);
+        QVERIFY(QFile::exists(first));
+        QVERIFY(store.chromePolicyDirty());
+        QVERIFY(!controller.disable().ok); // second destination still cannot be cleared
+        QVERIFY(store.chromePolicyDirty());
+    }
+    QVERIFY(QDir().rmdir(second));
+    controld::ProfileStore reloaded(path);
+    QVERIFY(reloaded.chromePolicyDirty());
+    controld::ProfileController restarted(reloaded, resolved, link, chrome);
+    QVERIFY(restarted.startup().ok);
+    QVERIFY(!QFile::exists(first));
+    QVERIFY(!reloaded.chromePolicyDirty());
+    QVERIFY(reloaded.chromePinnedResolverId().isEmpty());
+    QCOMPARE(chrome.clears, 2);
+}
+
+void TestProfileController::persistenceFailureStopsSystemChanges() {
+    Fixture fixture;
+    const QString id = fixture.add(QStringLiteral("Home"), QStringLiteral("aaaa"));
+    const QString path = fixture.store.filePath();
+    QVERIFY(QFile::remove(path));
+    QVERIFY(QDir().mkdir(path));
+    const auto result = fixture.controller.activateProfile(id);
+    QVERIFY(!result.ok);
+    QVERIFY(result.notification.contains(QStringLiteral("save settings")));
+    QVERIFY(fixture.resolved.calls.isEmpty());
+    QVERIFY(!fixture.controller.setChromePolicyEnabled(true).ok);
+    QVERIFY(fixture.chrome.applied.isEmpty());
+}
+
+void TestProfileController::activationOnSameInterfaceReapplies() {
+    Fixture fixture;
+    const QString id = fixture.add(QStringLiteral("Home"), QStringLiteral("aaaa"));
+    QVERIFY(fixture.controller.activateProfile(id).ok);
+    fixture.resolved.calls.clear();
+    fixture.controller.onPrimaryLinkActivated();
+    QVERIFY(!fixture.resolved.calls.isEmpty());
+    QCOMPARE(fixture.resolved.calls.first().method, QStringLiteral("setLinkDnsEx"));
+}
+
+void TestProfileController::failedBookkeepingPreservesChromeCleanupIntent() {
+    class FailingStorageChrome final : public controld::IChromePolicyWriter {
+      public:
+        QString settings;
+        controld::CallResult apply(const QString& id) override {
+            Q_UNUSED(id);
+            // Simulate storage becoming unavailable after the privileged write.
+            if (!QFile::rename(settings, settings + QStringLiteral(".saved")) ||
+                !QDir().mkdir(settings)) {
+                return controld::CallResult::failure({}, QStringLiteral("fixture failed"));
+            }
+            return controld::CallResult::success();
+        }
+        controld::CallResult clear() override {
+            return controld::CallResult::success();
+        }
+    } chrome;
+    QTemporaryDir dir;
+    chrome.settings = dir.filePath(QStringLiteral("settings.ini"));
+    controld::ProfileStore store(chrome.settings);
+    controld::MockResolved resolved;
+    controld::MockLink link;
+    controld::ProfileController controller(store, resolved, link, chrome);
+    const QString id =
+        controller.addProfile(QStringLiteral("Home"), QStringLiteral("aaaa"), nullptr);
+    QVERIFY(controller.setChromePolicyEnabled(true).ok);
+    const auto applied = controller.activateProfile(id);
+    QVERIFY(!applied.ok);
+    QVERIFY(applied.detail.contains(QStringLiteral("save settings")));
+    QVERIFY(store.chromePolicyDirty());
+    controld::ProfileStore persisted(chrome.settings + QStringLiteral(".saved"));
+    QVERIFY(persisted.chromePolicyDirty());
+    QVERIFY(persisted.chromePinnedResolverId().isEmpty());
 }
 
 QTEST_MAIN(TestProfileController)

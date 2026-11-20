@@ -36,7 +36,8 @@ CallResult fromReply(const QDBusMessage& reply) {
 
 } // namespace
 
-SystemdResolvedBackend::SystemdResolvedBackend() {
+SystemdResolvedBackend::SystemdResolvedBackend(QString policyPath)
+    : m_policyPath(std::move(policyPath)) {
     registerResolvedMetaTypes();
 }
 
@@ -50,17 +51,29 @@ CallResult SystemdResolvedBackend::setLinkDnsEx(int ifindex,
     if (!error.isEmpty()) {
         return CallResult::failure({}, error);
     }
+    const CallResult authorized = authorizeDnsChanges(m_policyPath);
+    if (!authorized.ok) {
+        return authorized;
+    }
     return fromReply(invoke(QStringLiteral("SetLinkDNSEx"), [&](QDBusMessage& message) {
         message << ifindex << QVariant::fromValue(wire);
     }));
 }
 
 CallResult SystemdResolvedBackend::setLinkDnsOverTls(int ifindex, const QString& mode) {
+    const CallResult authorized = authorizeDnsChanges(m_policyPath);
+    if (!authorized.ok) {
+        return authorized;
+    }
     return fromReply(invoke(QStringLiteral("SetLinkDNSOverTLS"),
                             [&](QDBusMessage& message) { message << ifindex << mode; }));
 }
 
 CallResult SystemdResolvedBackend::setLinkDomains(int ifindex, const QList<SearchDomain>& domains) {
+    const CallResult authorized = authorizeDnsChanges(m_policyPath);
+    if (!authorized.ok) {
+        return authorized;
+    }
     const QList<SearchDomainWire> wire = domainsToWire(domains);
     return fromReply(invoke(QStringLiteral("SetLinkDomains"), [&](QDBusMessage& message) {
         message << ifindex << QVariant::fromValue(wire);
@@ -68,11 +81,19 @@ CallResult SystemdResolvedBackend::setLinkDomains(int ifindex, const QList<Searc
 }
 
 CallResult SystemdResolvedBackend::setLinkDefaultRoute(int ifindex, bool enable) {
+    const CallResult authorized = authorizeDnsChanges(m_policyPath);
+    if (!authorized.ok) {
+        return authorized;
+    }
     return fromReply(invoke(QStringLiteral("SetLinkDefaultRoute"),
                             [&](QDBusMessage& message) { message << ifindex << enable; }));
 }
 
 CallResult SystemdResolvedBackend::revertLink(int ifindex) {
+    const CallResult authorized = authorizeDnsChanges(m_policyPath);
+    if (!authorized.ok) {
+        return authorized;
+    }
     return fromReply(
         invoke(QStringLiteral("RevertLink"), [&](QDBusMessage& message) { message << ifindex; }));
 }

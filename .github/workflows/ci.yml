@@ -28,6 +28,7 @@ jobs:
             clang-format \
             clang-tidy \
             dpkg-dev \
+            dbus \
             file \
             python3
 
@@ -122,6 +123,7 @@ jobs:
             libfontconfig1-dev \
             libfreetype6-dev \
             libdbus-1-dev \
+            dbus \
             libx11-dev \
             libx11-xcb-dev \
             libxext-dev \

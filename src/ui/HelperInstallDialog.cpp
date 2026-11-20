@@ -30,6 +30,7 @@ void runHelperInstall(QWidget* parent) {
     QMessageBox::information(
         parent, QStringLiteral("Install helper"),
         QStringLiteral("The Chrome policy helper is installed. DNS settings were not changed. "
+                       "DNS changes now use a grouped authorization prompt. "
                        "You can now pin Chrome and Chromium Secure DNS from Settings."));
 }
 
@@ -48,7 +49,8 @@ void runHelperUninstall(QWidget* parent, ProfileController& controller) {
         QMessageBox::Yes) {
         return;
     }
-    if (controller.store().chromePolicyEnabled()) {
+    if (controller.store().chromePolicyEnabled() || controller.store().chromePolicyDirty() ||
+        !controller.store().chromePinnedResolverId().isEmpty()) {
         const OperationResult cleared = controller.setChromePolicyEnabled(false);
         if (!cleared.ok) {
             QMessageBox::warning(parent, QStringLiteral("Uninstall helper"),

@@ -123,9 +123,14 @@ void TrayController::rebuildMenu() {
             &TrayController::restartChrome);
     if (appImageLaunch(QProcessEnvironment::systemEnvironment()).active) {
         const SystemHelperStatus status = inspectSystemHelper({}, true);
-        if (!status.ready) {
-            connect(m_menu->addAction(QStringLiteral("Install helper")), &QAction::triggered, this,
-                    [this]() { runHelperInstall(&m_settings); });
+        const bool updateAvailable = status.managedByApp && !status.groupedDnsAuthorization;
+        if (!status.ready || updateAvailable) {
+            connect(m_menu->addAction(updateAvailable ? QStringLiteral("Update helper")
+                                                      : QStringLiteral("Install helper")),
+                    &QAction::triggered, this, [this]() {
+                        runHelperInstall(&m_settings);
+                        rebuildMenu();
+                    });
         }
         if (status.managedByApp) {
             connect(m_menu->addAction(QStringLiteral("Uninstall helper")), &QAction::triggered,

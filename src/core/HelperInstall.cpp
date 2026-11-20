@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QXmlStreamReader>
 
 #include <cerrno>
 #include <cstring>
@@ -370,6 +371,23 @@ QString policyActionId() {
     return QStringLiteral("com.vzhitko.controldtray.chrome-policy");
 }
 
+QString dnsPolicyActionId() {
+    return QStringLiteral("com.vzhitko.controldtray.configure-dns");
+}
+
+bool policyHasDnsAuthorization(const QString& text) {
+    QXmlStreamReader xml(text);
+    bool found = false;
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isStartElement() && xml.name() == QLatin1String("action") &&
+            xml.attributes().value(QStringLiteral("id")) == dnsPolicyActionId()) {
+            found = true;
+        }
+    }
+    return found && !xml.hasError();
+}
+
 bool installDestinationAllowed(const QString& destination) {
     if (destination == helperDestination() || destination == policyDestination()) {
         return true;
@@ -595,6 +613,15 @@ LibraryPlan librariesForHelper(const QString& helperPath, const QString& appDir)
 
 SystemHelperStatus inspectSystemHelper(const QString& rootPrefix, bool requireRootOwner) {
     SystemHelperStatus status;
+    QString error;
+    QList<ManifestEntry> entries;
+    const QString manifestPath = joinRoot(rootPrefix, manifestDestination());
+    const QFileInfo manifest(manifestPath);
+    if (manifest.exists() && !manifest.isSymLink() && manifest.isFile()) {
+        const QString manifestBody = readTextFile(manifestPath, kMaxPolicyBytes, &error);
+        status.managedByApp =
+            !manifestBody.isEmpty() && parseManifest(manifestBody, &entries, &error);
+    }
     const QString helperPath = joinRoot(rootPrefix, helperDestination());
     const QFileInfo helper(helperPath);
     if (!helperFileAcceptable(helper, requireRootOwner, &status.detail)) {
@@ -606,8 +633,8 @@ SystemHelperStatus inspectSystemHelper(const QString& rootPrefix, bool requireRo
         status.detail = QStringLiteral("The polkit policy is not installed.");
         return status;
     }
-    QString error;
     const QString text = readTextFile(policyPath, kMaxPolicyBytes, &error);
+    status.groupedDnsAuthorization = policyHasDnsAuthorization(text);
     if (!policyTextAcceptable(text)) {
         status.detail = error.isEmpty()
                             ? QStringLiteral("The polkit policy is not the ControlD Tray action.")
@@ -615,13 +642,16 @@ SystemHelperStatus inspectSystemHelper(const QString& rootPrefix, bool requireRo
         return status;
     }
 
-    const QString manifestPath = joinRoot(rootPrefix, manifestDestination());
-    const QFileInfo manifest(manifestPath);
-    if (manifest.exists() && !manifest.isSymLink() && manifest.isFile()) {
-        const QString manifestBody = readTextFile(manifestPath, kMaxPolicyBytes, &error);
-        QList<ManifestEntry> entries;
-        status.managedByApp =
-            !manifestBody.isEmpty() && parseManifest(manifestBody, &entries, &error);
+    if (status.managedByApp) {
+        for (const ManifestEntry& entry : entries) {
+            const QString path = joinRoot(rootPrefix, entry.destination);
+            const QFileInfo file(path);
+            if (!file.isFile() || file.isSymLink() || sha256File(path, &error) != entry.sha256) {
+                status.detail =
+                    QStringLiteral("The helper install is incomplete or changed: %1").arg(path);
+                return status;
+            }
+        }
     }
     status.ready = true;
     status.detail = QStringLiteral("The Chrome policy helper is installed.");
@@ -629,6 +659,10 @@ SystemHelperStatus inspectSystemHelper(const QString& rootPrefix, bool requireRo
 }
 
 QString appImageHelperNote(const SystemHelperStatus& status) {
+    if (status.ready && status.managedByApp && !status.groupedDnsAuthorization) {
+        return QStringLiteral("The installed AppImage helper has an older authorization policy. "
+                              "Update helper to group DNS changes into one authentication prompt.");
+    }
     if (status.ready && status.managedByApp) {
         return QStringLiteral(
             "This copy is an AppImage. The Chrome Secure DNS helper is installed in system paths. "
@@ -647,14 +681,18 @@ QString appImageHelperNote(const SystemHelperStatus& status) {
     }
     return QStringLiteral("This copy is an AppImage. DNS switching works without installing system "
                           "files. The optional Chrome "
-                          "Secure DNS helper is not installed. Install helper copies it into "
+                          "Secure DNS helper and grouped DNS authorization policy are not "
+                          "installed. Install helper copies them into "
                           "system paths after you confirm.");
 }
 
 QString helperInstallPrompt(const QStringList& destinations) {
     return QStringLiteral(
-               "Install the optional Chrome and Chromium Secure DNS helper?\n\n"
+               "Install or update the optional Chrome and Chromium Secure DNS helper and grouped "
+               "DNS authorization policy?\n\n"
                "Switching ControlD profiles uses systemd-resolved and does not need this helper. "
+               "The included policy groups DNS changes under one temporary administrator "
+               "authorization. "
                "Nothing is written until you confirm. Polkit will then ask to run python3 as the "
                "administrator; that program copies only the files listed below.\n\n"
                "%1\n\n"

@@ -8,6 +8,7 @@
 
 #include <QProcessEnvironment>
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QCoreApplication>
 #include <QDialogButtonBox>
@@ -20,6 +21,12 @@
 #include <QVBoxLayout>
 
 namespace controld {
+
+void SettingsWindow::showWithoutTray() {
+    QApplication::setQuitOnLastWindowClosed(true);
+    setAttribute(Qt::WA_QuitOnClose, true);
+    show();
+}
 
 SettingsWindow::SettingsWindow(ProfileController& controller, QWidget* parent)
     : QDialog(parent), m_controller(controller) {
@@ -142,7 +149,10 @@ void SettingsWindow::refreshHelperSection() {
     }
     const SystemHelperStatus status = inspectSystemHelper({}, true);
     m_helperNote->setText(appImageHelperNote(status));
-    m_installHelper->setVisible(!status.ready);
+    const bool updateAvailable = status.managedByApp && !status.groupedDnsAuthorization;
+    m_installHelper->setText(updateAvailable ? QStringLiteral("Update helper")
+                                             : QStringLiteral("Install helper"));
+    m_installHelper->setVisible(!status.ready || updateAvailable);
     m_uninstallHelper->setVisible(status.managedByApp);
 }
 

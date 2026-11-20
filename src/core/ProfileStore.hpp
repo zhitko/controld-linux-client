@@ -27,21 +27,32 @@ class ProfileStore {
     bool removeProfile(const QString& id, QString* error);
 
     QString activeProfileId() const;
-    void setActiveProfileId(const QString& id);
+    bool setActiveProfileId(const QString& id, QString* error = nullptr);
 
     QList<int> appliedIfindexes() const;
-    void setAppliedIfindexes(const QList<int>& ifindexes);
+    bool setAppliedIfindexes(const QList<int>& ifindexes, QString* error = nullptr);
 
     bool chromePolicyEnabled() const;
-    void setChromePolicyEnabled(bool enabled);
+    bool setChromePolicyEnabled(bool enabled, QString* error = nullptr);
 
     QString chromePinnedResolverId() const;
-    void setChromePinnedResolverId(const QString& resolverId);
+    bool setChromePinnedResolverId(const QString& resolverId, QString* error = nullptr);
+
+    bool chromePolicyDirty() const;
+    bool setChromePolicyDirty(bool dirty, QString* error = nullptr);
 
   private:
     void load();
-    void write();
-    void secureFile() const;
+    bool write(QString* error);
+    template <typename T> bool persistValue(T& field, const T& value, QString* error) {
+        const T previous = field;
+        field = value;
+        if (!write(error)) {
+            field = previous;
+            return false;
+        }
+        return true;
+    }
     static QList<int> sanitizeIfindexes(const QList<int>& ifindexes);
 
     QString m_path;
@@ -51,6 +62,7 @@ class ProfileStore {
     QList<int> m_appliedIfindexes;
     bool m_chromePolicyEnabled = false;
     QString m_chromePinnedResolverId;
+    bool m_chromePolicyDirty = false;
 };
 
 } // namespace controld

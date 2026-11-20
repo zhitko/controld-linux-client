@@ -43,6 +43,7 @@ controld_strict(controld-core)
 set(CONTROLD_HELPER_PATH "${CMAKE_INSTALL_FULL_LIBEXECDIR}/controld-tray-chrome-policy")
 
 add_library(controld-dbus STATIC
+    src/dbus/DnsAuthorization.cpp
     src/dbus/ResolvedMarshalling.cpp
     src/dbus/SystemdResolvedBackend.cpp
     src/dbus/NetworkManagerWatcher.cpp
@@ -50,6 +51,8 @@ add_library(controld-dbus STATIC
 )
 target_link_libraries(controld-dbus PUBLIC controld-core Qt6::DBus)
 target_compile_definitions(controld-dbus PRIVATE CONTROLD_TRAY_HELPER_PATH="${CONTROLD_HELPER_PATH}")
+target_compile_definitions(controld-dbus PRIVATE
+    CONTROLD_TRAY_POLICY_PATH="${CMAKE_INSTALL_FULL_DATAROOTDIR}/polkit-1/actions/com.vzhitko.controldtray.policy")
 controld_strict(controld-dbus)
 
 add_library(controld-ui STATIC
@@ -104,6 +107,22 @@ if(BUILD_TESTING)
     target_link_libraries(test-tray-menu PRIVATE controld-ui)
     target_compile_definitions(test-helper-install PRIVATE
         CONTROLD_INSTALL_SCRIPT="${CMAKE_SOURCE_DIR}/packaging/install_system_files.py")
+    find_program(DBUS_RUN_SESSION dbus-run-session)
+    if(NOT DBUS_RUN_SESSION)
+        message(FATAL_ERROR "dbus-run-session is required to test NetworkManager integration")
+    endif()
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_executable(test-network-manager tests/TestNetworkManagerWatcher.cpp)
+    target_link_libraries(test-network-manager PRIVATE controld-dbus Qt6::Test)
+    controld_strict(test-network-manager)
+    add_test(NAME test-network-manager COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:test-network-manager>)
+    add_executable(test-dns-authorization tests/TestDnsAuthorization.cpp)
+    target_link_libraries(test-dns-authorization PRIVATE controld-dbus Qt6::Test)
+    target_compile_definitions(test-dns-authorization PRIVATE
+        CONTROLD_TEST_POLICY="${CMAKE_CURRENT_BINARY_DIR}/com.vzhitko.controldtray.policy")
+    controld_strict(test-dns-authorization)
+    add_test(NAME test-dns-authorization COMMAND ${DBUS_RUN_SESSION} -- $<TARGET_FILE:test-dns-authorization>)
+    add_test(NAME test-installer-recovery COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/TestInstallerRecovery.py)
 endif()
 
 configure_file(

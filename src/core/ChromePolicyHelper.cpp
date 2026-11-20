@@ -5,6 +5,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QUuid>
 
 #include <cerrno>
 #include <cstring>
@@ -22,84 +23,92 @@ HelperOutcome outcome(int code, QString error) {
     return result;
 }
 
-bool ensureDirectoryChain(const QString& dirPath, QString* error) {
+int openDirectoryChain(const QString& dirPath, bool create, bool* missing, QString* error) {
+    *missing = false;
     if (!dirPath.startsWith(QLatin1Char('/'))) {
         *error = QStringLiteral("Policy directory is not absolute.");
-        return false;
+        return -1;
     }
-
+    int fd = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) {
+        *error = QString::fromLocal8Bit(strerror(errno));
+        return -1;
+    }
     QString current;
     const QStringList parts = dirPath.split(QLatin1Char('/'), Qt::SkipEmptyParts);
     for (const QString& part : parts) {
         if (part == QLatin1String(".") || part == QLatin1String("..")) {
             *error = QStringLiteral("Policy path contains a relative component.");
-            return false;
+            close(fd);
+            return -1;
         }
         current += QLatin1Char('/') + part;
 
-        struct stat status {};
-        if (lstat(current.toUtf8().constData(), &status) != 0) {
-            if (errno != ENOENT) {
-                *error = QStringLiteral("Could not inspect %1: %2")
-                             .arg(current, QString::fromLocal8Bit(strerror(errno)));
-                return false;
-            }
-            if (mkdir(current.toUtf8().constData(), 0755) != 0) {
+        const QByteArray component = part.toUtf8();
+        int next =
+            openat(fd, component.constData(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (next < 0 && errno == ENOENT && create) {
+            if (mkdirat(fd, component.constData(), 0755) != 0 && errno != EEXIST) {
                 *error = QStringLiteral("Could not create %1: %2")
                              .arg(current, QString::fromLocal8Bit(strerror(errno)));
-                return false;
+                close(fd);
+                return -1;
             }
-            continue;
+            next =
+                openat(fd, component.constData(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         }
-        if (S_ISLNK(status.st_mode)) {
-            *error = QStringLiteral("Refusing to use a symlink: %1").arg(current);
-            return false;
+        if (next < 0) {
+            *missing = errno == ENOENT && !create;
+            if (!*missing) {
+                *error = QStringLiteral("Could not safely open directory %1: %2")
+                             .arg(current, QString::fromLocal8Bit(strerror(errno)));
+            }
+            close(fd);
+            return -1;
         }
-        if (!S_ISDIR(status.st_mode)) {
-            *error = QStringLiteral("Not a directory: %1").arg(current);
-            return false;
-        }
+        close(fd);
+        fd = next;
     }
-    return true;
+    return fd;
 }
 
 bool writeAtomic(const QString& path, const QByteArray& data, QString* error) {
     const QFileInfo info(path);
-    if (!ensureDirectoryChain(info.dir().absolutePath(), error)) {
+    bool missing = false;
+    const int directory = openDirectoryChain(info.dir().absolutePath(), true, &missing, error);
+    if (directory < 0) {
         return false;
     }
+    // All operations below are relative to the validated directory descriptor.
+    const QByteArray name = info.fileName().toUtf8();
 
     struct stat status {};
-    if (lstat(path.toUtf8().constData(), &status) == 0) {
+    if (fstatat(directory, name.constData(), &status, AT_SYMLINK_NOFOLLOW) == 0) {
         if (S_ISLNK(status.st_mode)) {
             *error = QStringLiteral("Refusing to replace a symlink: %1").arg(path);
+            close(directory);
             return false;
         }
         if (!S_ISREG(status.st_mode)) {
             *error = QStringLiteral("Refusing to replace a non-regular file: %1").arg(path);
+            close(directory);
             return false;
         }
+    } else if (errno != ENOENT) {
+        *error = QStringLiteral("Could not inspect %1: %2")
+                     .arg(path, QString::fromLocal8Bit(strerror(errno)));
+        close(directory);
+        return false;
     }
 
-    const QByteArray tempPath = (path + QStringLiteral(".tmp")).toUtf8();
-    if (lstat(tempPath.constData(), &status) == 0) {
-        if (S_ISLNK(status.st_mode) || !S_ISREG(status.st_mode)) {
-            *error =
-                QStringLiteral("Refusing to use a non-regular temporary file for %1").arg(path);
-            return false;
-        }
-        if (unlink(tempPath.constData()) != 0) {
-            *error = QStringLiteral("Could not remove %1: %2")
-                         .arg(QString::fromUtf8(tempPath), QString::fromLocal8Bit(strerror(errno)));
-            return false;
-        }
-    }
-
-    const int fd =
-        open(tempPath.constData(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
+    const QByteArray tempPath =
+        name + "." + QUuid::createUuid().toByteArray(QUuid::WithoutBraces) + ".tmp";
+    const int fd = openat(directory, tempPath.constData(),
+                          O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0644);
     if (fd < 0) {
         *error = QStringLiteral("Could not create %1: %2")
                      .arg(QString::fromUtf8(tempPath), QString::fromLocal8Bit(strerror(errno)));
+        close(directory);
         return false;
     }
 
@@ -108,12 +117,16 @@ bool writeAtomic(const QString& path, const QByteArray& data, QString* error) {
             close(fd);
         }
     };
+    auto discard = [&]() {
+        unlinkat(directory, tempPath.constData(), 0);
+        close(directory);
+    };
 
     if (fchmod(fd, 0644) != 0) {
         *error = QStringLiteral("Could not set permissions on %1: %2")
                      .arg(QString::fromUtf8(tempPath), QString::fromLocal8Bit(strerror(errno)));
         closeFd();
-        unlink(tempPath.constData());
+        discard();
         return false;
     }
 
@@ -128,7 +141,7 @@ bool writeAtomic(const QString& path, const QByteArray& data, QString* error) {
             *error = QStringLiteral("Could not write %1: %2")
                          .arg(path, QString::fromLocal8Bit(strerror(errno)));
             closeFd();
-            unlink(tempPath.constData());
+            discard();
             return false;
         }
         offset += wrote;
@@ -137,47 +150,61 @@ bool writeAtomic(const QString& path, const QByteArray& data, QString* error) {
         *error = QStringLiteral("Could not flush %1: %2")
                      .arg(path, QString::fromLocal8Bit(strerror(errno)));
         closeFd();
-        unlink(tempPath.constData());
+        discard();
         return false;
     }
     if (close(fd) != 0) {
         *error = QStringLiteral("Could not close %1: %2")
                      .arg(path, QString::fromLocal8Bit(strerror(errno)));
-        unlink(tempPath.constData());
+        discard();
         return false;
     }
-    if (rename(tempPath.constData(), path.toUtf8().constData()) != 0) {
+    if (renameat(directory, tempPath.constData(), directory, name.constData()) != 0) {
         *error = QStringLiteral("Could not replace %1: %2")
                      .arg(path, QString::fromLocal8Bit(strerror(errno)));
-        unlink(tempPath.constData());
+        discard();
         return false;
     }
+    close(directory);
     return true;
 }
 
 bool removeFile(const QString& path, QString* error) {
+    const QFileInfo info(path);
+    bool missing = false;
+    const int directory = openDirectoryChain(info.dir().absolutePath(), false, &missing, error);
+    if (directory < 0) {
+        return missing;
+    }
+    const QByteArray name = info.fileName().toUtf8();
     struct stat status {};
-    if (lstat(path.toUtf8().constData(), &status) != 0) {
+    if (fstatat(directory, name.constData(), &status, AT_SYMLINK_NOFOLLOW) != 0) {
         if (errno == ENOENT) {
+            close(directory);
             return true;
         }
         *error = QStringLiteral("Could not inspect %1: %2")
                      .arg(path, QString::fromLocal8Bit(strerror(errno)));
+        close(directory);
         return false;
     }
     if (S_ISLNK(status.st_mode)) {
         *error = QStringLiteral("Refusing to remove a symlink: %1").arg(path);
+        close(directory);
         return false;
     }
     if (!S_ISREG(status.st_mode)) {
         *error = QStringLiteral("Refusing to remove a non-regular file: %1").arg(path);
+        close(directory);
         return false;
     }
-    if (unlink(path.toUtf8().constData()) != 0) {
+    if (unlinkat(directory, name.constData(), 0) != 0) {
         *error = QStringLiteral("Could not remove %1: %2")
                      .arg(path, QString::fromLocal8Bit(strerror(errno)));
+        close(directory);
         return false;
     }
+    close(directory);
     return true;
 }
 
