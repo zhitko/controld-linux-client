@@ -4,6 +4,18 @@ Unofficial tray client for [Control D](https://controld.com). It switches premiu
 
 The app runs as your user. Changing a link's DNS asks systemd-resolved over D-Bus. When the included polkit policy is installed, the app requests one temporary administrator authorization covering its DNS changes. An optional Chrome/Chromium Secure DNS policy goes through a small `pkexec` helper and can require a separate prompt.
 
+## Screenshots
+
+The tray menu. The checked item is the current choice. With no profile selected, that is **Disable (restore default DNS)**.
+
+![Tray menu](docs/screenshots/tray-menu.png)
+
+Settings lists the saved profiles and can switch or restore DNS when a tray host cannot show a menu.
+
+![Settings](docs/screenshots/settings.png)
+
+![Profile editor](docs/screenshots/profile-editor.png)
+
 ## What it does
 
 - Tray menu of saved profiles (display name + Control D resolver ID). The selected profile is checked. Left click and right click both open that menu. A click does not open Settings by itself; Settings is an item in the menu.
