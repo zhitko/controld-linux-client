@@ -35,7 +35,7 @@ int runInstaller(const QStringList& arguments, const QString& root, QString* err
                  bool confirmTestRoot = true) {
     QProcess process;
     process.setProgram(QStringLiteral("python3"));
-    process.setArguments(QStringList{scriptPath()} + arguments);
+    process.setArguments(QStringList {scriptPath()} + arguments);
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
     if (root.isEmpty()) {
         environment.remove(QStringLiteral("CONTROLD_TRAY_INSTALL_ROOT"));
