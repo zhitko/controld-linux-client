@@ -7,6 +7,19 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 QT_ROOT=${QT_ROOT:?Set QT_ROOT to the Qt gcc_64 directory}
+# linuxdeploy skips libraries whose path is inside the project directory, then
+# the Qt plugin cannot see them. A bind mount gives ldd a path outside ROOT.
+# A symlink is not enough: ldd reports the resolved path.
+if [[ "$QT_ROOT" == "$ROOT" || "$QT_ROOT" == "$ROOT/"* ]]; then
+    OUTSIDE=/opt/controld-tray-qt
+    mkdir -p "$OUTSIDE"
+    if ! mountpoint -q "$OUTSIDE"; then
+        if ! mount --bind "$QT_ROOT" "$OUTSIDE"; then
+            cp -a "$QT_ROOT/." "$OUTSIDE/"
+        fi
+    fi
+    QT_ROOT=$OUTSIDE
+fi
 BUILD_DIR=${BUILD_DIR:-"$ROOT/build-appimage"}
 APPDIR=${APPDIR:-"$ROOT/AppDir"}
 TOOLS=${TOOLS:-"$ROOT/.appimage-tools"}
@@ -50,6 +63,11 @@ cmake --build "$BUILD_DIR"
 rm -rf "$APPDIR"
 DESTDIR="$APPDIR" cmake --install "$BUILD_DIR"
 
+# The linuxdeploy AppImage replaces LD_LIBRARY_PATH. An absolute RPATH still
+# lets it find Qt and copy those libraries into the image.
+patchelf --set-rpath "$QT_ROOT/lib" "$APPDIR/usr/bin/controld-tray"
+patchelf --set-rpath "$QT_ROOT/lib" "$APPDIR/usr/libexec/controld-tray-chrome-policy"
+
 linuxdeploy-x86_64.AppImage \
     --appdir "$APPDIR" \
     --executable "$APPDIR/usr/bin/controld-tray" \
@@ -62,6 +80,9 @@ HELPER="$APPDIR/usr/libexec/controld-tray-chrome-policy"
 patchelf --set-rpath '$ORIGIN/../lib/controld-tray' "$HELPER"
 test "$(patchelf --print-rpath "$HELPER")" = '$ORIGIN/../lib/controld-tray'
 "$BUILD_DIR/controld-check-helper" "$HELPER" "$APPDIR"
+
+# appimagetool builds .DirIcon from a top-level PNG. linuxdeploy publishes the SVG.
+cp "$APPDIR/usr/share/icons/hicolor/256x256/apps/controld-tray.png" "$APPDIR/controld-tray.png"
 
 rm -f "$OUTPUT"
 appimagetool-x86_64.AppImage "$APPDIR" "$OUTPUT"

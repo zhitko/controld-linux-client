@@ -4,7 +4,9 @@
 #include "core/ILinkInfo.hpp"
 #include "core/IResolvedBackend.hpp"
 
+#include <QHash>
 #include <QList>
+#include <QStringList>
 
 namespace controld {
 
