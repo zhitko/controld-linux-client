@@ -110,6 +110,14 @@ class MockLink final : public ILinkInfo {
   public:
     int index = 3;
     QString name = QStringLiteral("wlan0");
+    LinkDnsConfiguration dns;
+
+    MockLink() {
+        DnsServerEndpoint endpoint;
+        endpoint.address = QHostAddress(QStringLiteral("192.168.1.1"));
+        dns.servers.append(endpoint);
+        dns.defaultRoute = true;
+    }
 
     int ifindex() const override {
         return index;
@@ -117,6 +125,11 @@ class MockLink final : public ILinkInfo {
 
     QString interfaceName() const override {
         return name;
+    }
+
+    LinkDnsConfiguration linkDns(int ifindex) const override {
+        Q_UNUSED(ifindex);
+        return dns;
     }
 };
 

@@ -17,6 +17,7 @@ class TestProfileController : public QObject {
     void verificationFailureIsNotReportedActive();
     void dnsErrorStopsBeforeFlush();
     void disableRevertsOnlyLinksThisAppConfigured();
+    void disableKeepsTheLinkWhenDnsRestoreFails();
     void linkSwitchRevertsThePreviousInterface();
     void disappearedPreviousLinkIsNotFatal();
     void chromePolicyIsPinnedOnceAndClearedOnDisable();
@@ -126,10 +127,35 @@ void TestProfileController::disableRevertsOnlyLinksThisAppConfigured() {
     QCOMPARE(disabled.status, controld::RuntimeStatus::Disabled);
     QCOMPARE(fixture.resolved.calls.at(0).method, QStringLiteral("revertLink"));
     QCOMPARE(fixture.resolved.calls.at(0).ifindex, 3);
-    QCOMPARE(fixture.resolved.calls.at(1).method, QStringLiteral("flushCaches"));
+    QCOMPARE(fixture.resolved.calls.at(1).method, QStringLiteral("setLinkDnsEx"));
+    QCOMPARE(fixture.resolved.calls.at(1).ifindex, 3);
+    QCOMPARE(fixture.resolved.calls.at(1).servers.size(), 1);
+    QCOMPARE(fixture.resolved.calls.at(1).servers.at(0).address,
+             QHostAddress(QStringLiteral("192.168.1.1")));
+    QVERIFY(fixture.resolved.calls.at(1).servers.at(0).sni.isEmpty());
+    QCOMPARE(fixture.resolved.calls.at(2).method, QStringLiteral("setLinkDefaultRoute"));
+    QVERIFY(fixture.resolved.calls.at(2).flag);
+    QCOMPARE(fixture.resolved.calls.at(3).method, QStringLiteral("flushCaches"));
     QVERIFY(fixture.store.appliedIfindexes().isEmpty());
     QVERIFY(fixture.store.activeProfileId().isEmpty());
-    QVERIFY(disabled.detail.contains(QStringLiteral("NetworkManager")));
+    QVERIFY(disabled.detail.contains(QStringLiteral("written back")));
+    QVERIFY(disabled.detail.contains(QStringLiteral("wlan0")));
+}
+
+void TestProfileController::disableKeepsTheLinkWhenDnsRestoreFails() {
+    Fixture fixture;
+    const QString id = fixture.add(QStringLiteral("Home"), QStringLiteral("abcd1234"));
+    QVERIFY(fixture.controller.activateProfile(id).ok);
+    fixture.resolved.calls.clear();
+    fixture.resolved.failures.insert(
+        QStringLiteral("setLinkDnsEx"),
+        controld::CallResult::failure(QStringLiteral("org.freedesktop.DBus.Error.AccessDenied"),
+                                      QStringLiteral("canceled")));
+    const controld::OperationResult disabled = fixture.controller.disable();
+    QVERIFY(!disabled.ok);
+    QCOMPARE(disabled.status, controld::RuntimeStatus::Failed);
+    QCOMPARE(fixture.store.appliedIfindexes(), QList<int>({3}));
+    QVERIFY(disabled.detail.contains(QStringLiteral("NetworkManager DNS")));
 }
 
 void TestProfileController::linkSwitchRevertsThePreviousInterface() {
